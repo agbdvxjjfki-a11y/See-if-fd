@@ -2,46 +2,52 @@
 
 Checkpoint: 2026-10-28
 
-## Repository baseline
+## Current repository state
 
-- Working branch: `work/shura-development`.
+- Development branch: `work/shura-development`.
 - Application ID: `app.shura.android`; version name `0.1.2`; version code `3`.
-- Android project remains Kotlin/Compose/Material 3 with Java 17 and the checked-in Gradle wrapper.
-- The worktree was clean before this checkpoint. The local branch already contained four commits not present on `origin/work/shura-development`; they were preserved.
-- The shell initially selected Java 25 and Gradle failed before tests ran. Selecting `/usr/lib/jvm/java-17-openjdk-amd64` resolved that environment issue.
-- Verified APK-classification milestone: `035d77d` (`fix(security): fail closed on unknown APK content metadata`). Repository-local `commit.gpgsign=true` was honored by using an unsigned one-command override after explicit user authorization; the repository signing configuration was not changed.
+- Kotlin, Jetpack Compose, Material 3, Java 17, and the checked-in Gradle wrapper are retained.
+- Latest implementation checkpoint: `9fb65da` (`feat(app): add real MangaDex browsing and library progress`), pushed to `origin/work/shura-development`.
+- Repository-race checkpoint: `77da65d` (`fix(core): guard repository mutation races`).
+- The development branch was two commits ahead of its remote before the push; `77da65d` and `9fb65da` are now pushed. This status-document update is the only pending local change.
 
-## Completed capabilities retained
+## Implemented and validated
 
-- Real repository management, JSON/Protobuf parsing, app-private persistent catalogs, content filtering, diagnostics, and HTTPS index fetching.
-- Extension APK download, verification, Android `PackageInstaller` handoff, install-result verification, persisted app preferences, local-image reading, and Arabic/English UI.
-- The app explicitly does not claim that installed Mihon extensions can execute as Shura manga sources. Chapter downloads and OCR/translation are also not implemented.
+- Repository management supports validated add/edit, refresh, remove, retry, JSON and Protobuf indexes, diagnostics, and persistent catalogs. Network fetching and parsing run outside manager state locks. Concurrent additions and stale refreshes have regression tests.
+- APK installation retains HTTPS download limits, archive/package/version checks, APK-level Mihon NSFW metadata validation that fails closed, signer/hash verification, temporary-file cleanup, and Android `PackageInstaller` confirmation.
+- A built-in MangaDex provider now searches real safe-rated results, loads details and translated chapters, and obtains real chapter-page URLs. Search, chapter, and page metadata requests are bounded and HTTPS-validated; remote page requests restrict hosts, redirects, ports, and payload size.
+- Explore displays real MangaDex results and chapters. It credits MangaDex and the scanlation group when available. It does not execute installed Mihon extension code.
+- MangaDex entries can be saved using stable source IDs. Their chapter and page positions persist and can be resumed when the source still offers the chapter.
+- The reader displays selected local images and on-demand MangaDex pages. It supports paging, fit/crop, pinch zoom, retry, auto-flip, pause-on-touch, and memory-conscious sampled decoding. Remote page data is bounded and written to Shura-owned temporary cache files, then removed after decoding.
+- Settings include persistent system/light/dark appearance, Arabic/English language, reader navigation orientation and fit, controls, auto-flip and interval, pause-on-touch, data saver, image-memory preference, cache usage, confirmed Shura-temporary-file cleanup, repository/extension navigation, compatibility information, and accurate About details.
+- Arabic/English resources and the README were updated. The UI makes no claim that chapter downloads or translation exist.
 
-## Completed checkpoint changes
+## Latest verification
 
-- APK NSFW metadata is now represented as `SAFE`, `NSFW`, `MISSING`, or `INVALID` instead of a default-false Boolean.
-- Only an explicit integer `0` in the APK manifest is accepted. Integer `1` is rejected; absent, null, malformed, and unsupported values fail closed. This may exclude older extensions without valid APK metadata.
-- The APK check runs before a `VerifiedExtensionApk` can be created, so rejected downloads are deleted and cannot reach `PackageInstaller`.
-- Installed-package/update verification also requires a known-safe APK classification.
-- Tests cover classification values, safe catalog metadata paired with an adult APK classification, fail-closed missing/invalid metadata, temporary-file cleanup, and post-install verification.
+Executed with Java 17:
 
-## Validation
+```shell
+SHURA_RUN_INTEGRATION_TESTS=true ./gradlew :core:test :app:testDebugUnitTest :app:assembleDebug --no-daemon
+```
 
-- `./gradlew :app:testDebugUnitTest --tests app.shura.android.ApkNsfwClassificationTest --tests app.shura.android.ExtensionInstallCoordinatorTest --no-daemon` — passed.
-- `SHURA_RUN_INTEGRATION_TESTS=true ./gradlew :core:test --rerun-tasks --no-daemon` — passed, including live Keiyoushi checks and the generated 10,000-entry performance test.
-- `./gradlew :core:test :app:testDebugUnitTest :app:assembleDebug --no-daemon` with Java 17 — passed; the app unit tests ran and the debug APK assembled.
-- Live index results: `index.pb` redirected over HTTPS and parsed 1,043 entries; `index.min.json` returned HTTP 200 and parsed two current entries. These are point-in-time results, not fixed catalog-size assumptions.
-- 10,000-entry performance test: parse 562 ms, policy filtering 239 ms, search 34 ms, language filtering/sort 13 ms; measured on the current JVM and not an Android-device benchmark.
-- `git diff --check` — passed.
-- No emulator or physical Android device is available in this environment; on-device and screenshot validation has not been performed.
+- Build succeeded; the debug APK was produced at `app/build/outputs/apk/debug/app-debug.apk` (about 13 MiB).
+- Core tests: 57 tests passed, including repository race tests and the generated catalog performance test.
+- App unit tests: 27 tests passed, including APK validation, online-library persistence, and reader-performance tests.
+- Live MangaDex integration test ran (not skipped): safe-rated search, manga details, a real English chapter, and three real page URLs were returned. Network availability is independent of the mocked parser tests.
+- Live Keiyoushi checks passed: the redirected Protobuf index returned HTTP 200 with 1,043 entries, and the JSON index returned HTTP 200 with two entries. These are point-in-time catalog sizes.
+- The 10,000-entry JVM performance test reported: parse 965 ms, content filtering 638 ms, search 74 ms, language filtering/sort 49 ms; manager parse/filter/config-save 4,018 ms; repeated refresh 1,297/894/607 ms. This is a JVM measurement on the current Codespaces environment, not an Android-device benchmark.
+- `git diff --check` passed before the implementation checkpoint.
+- No emulator or physical device is available; installation, visual, RTL, and accessibility behavior have not been verified on-device.
 
-## Remaining work, ordered by dependency
+## Remaining work and limitations
 
-- [ ] Integrate and validate a compatible, legally reviewed Mihon source runtime before claiming online manga browsing. This repository currently has no Mihon source API dependency, source loader, runtime lifecycle, or invocation adapter. Merely loading arbitrary extension APK classes is not a safe or compatible execution strategy. The upstream Mihon project is Apache-2.0 and has a separate `source-api` module; any integration must preserve applicable notices/licenses and independently review extension/source terms. References: <https://github.com/mihonapp/mihon/tree/main/source-api> and <https://github.com/mihonapp/mihon/blob/main/LICENSE>.
-- [ ] After a real source runtime exists, implement source search/details/chapters/pages, stable source-backed library entries and progress, and chapter downloads. Current manually saved library titles are not fetched manga records; chapter downloads are not supported.
-- [ ] Implement OCR/translation only with a real OCR engine and a user-configured translation provider; no translation action or fabricated output is exposed today.
-- [ ] Perform visual, RTL/LTR, accessibility, and Android installation testing on an emulator or physical device.
+- [ ] Integrate a compatible and legally reviewed Mihon source runtime if a safe supported architecture is available. Shura does not execute installed extension APK source code; arbitrary APK class loading is not an acceptable substitute.
+- [ ] Add source pagination beyond the current MangaDex result/chapter limits where needed.
+- [ ] Implement a real chapter-download queue only when a compatible source and persistent page-download workflow are available. Current online pages are temporary reader loads, not downloads.
+- [ ] Implement OCR and translation only with an actual OCR engine and a genuine translation provider; neither feature is currently exposed as a fake action.
+- [ ] Consider explicit left-to-right/right-to-left reader direction and screen-orientation controls; current persisted navigation mode is horizontal or vertical.
+- [ ] Validate installation, visual layout, accessibility, and RTL/LTR flows on an Android emulator or device.
 
-## Checkpoint persistence
+## Checkpoint and branch policy
 
-The tested implementation is committed as `035d77d`; this status checkpoint is committed as `af122fe`. Both commits were pushed to `origin/work/shura-development`. The development branch must remain `work/shura-development`; do not commit to `main`, merge PR #1, enable auto-merge, or publish a release without explicit authorization.
+The current implementation checkpoint is `9fb65da`; prior security and repository-concurrency checkpoints are `035d77d` and `77da65d`. These are on `origin/work/shura-development`. Keep development on `work/shura-development`; do not commit to `main`, merge PR #1, enable auto-merge, or publish a release without explicit authorization.
