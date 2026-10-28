@@ -5,6 +5,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -251,6 +252,117 @@ class RepositoryManagerTest {
             assertEquals(1, manager.repositories().size)
         } finally {
             allowRequestToFinish.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun concurrentAddsPersistEveryDistinctRepositoryWithoutLostUpdates() {
+        val requestsStarted = CountDownLatch(2)
+        val allowRequestsToFinish = CountDownLatch(1)
+        val store = InMemoryRepositoryStore()
+        val manager = RepositoryManager(store, RepositoryIndexSource { repository ->
+            requestsStarted.countDown()
+            check(allowRequestsToFinish.await(5, TimeUnit.SECONDS))
+            fetched("[]", repository)
+        })
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val first = executor.submit { manager.addRepository("https://example.org/first") }
+            val second = executor.submit { manager.addRepository("https://example.org/second") }
+            assertTrue(requestsStarted.await(5, TimeUnit.SECONDS))
+            allowRequestsToFinish.countDown()
+
+            first.get(5, TimeUnit.SECONDS)
+            second.get(5, TimeUnit.SECONDS)
+
+            assertEquals(
+                setOf("https://example.org/first", "https://example.org/second"),
+                store.load().toSet(),
+            )
+            assertEquals(2, manager.repositories().size)
+        } finally {
+            allowRequestsToFinish.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun concurrentDuplicateAddsCommitOnlyOneRepository() {
+        val requestsStarted = CountDownLatch(2)
+        val allowRequestsToFinish = CountDownLatch(1)
+        val store = InMemoryRepositoryStore()
+        val manager = RepositoryManager(store, RepositoryIndexSource { repository ->
+            requestsStarted.countDown()
+            check(allowRequestsToFinish.await(5, TimeUnit.SECONDS))
+            fetched("[]", repository)
+        })
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val first = executor.submit<Boolean> {
+                try {
+                    manager.addRepository("https://example.org/extensions")
+                    true
+                } catch (_: IllegalArgumentException) {
+                    false
+                }
+            }
+            val second = executor.submit<Boolean> {
+                try {
+                    manager.addRepository("https://example.org/extensions")
+                    true
+                } catch (_: IllegalArgumentException) {
+                    false
+                }
+            }
+            assertTrue(requestsStarted.await(5, TimeUnit.SECONDS))
+            allowRequestsToFinish.countDown()
+
+            val successes = listOf(first.get(5, TimeUnit.SECONDS), second.get(5, TimeUnit.SECONDS))
+            assertEquals(1, successes.count { it })
+            assertEquals(1, successes.count { !it })
+            assertEquals(listOf("https://example.org/extensions"), store.load())
+            assertEquals(1, manager.repositories().size)
+        } finally {
+            allowRequestsToFinish.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun olderConcurrentRefreshCannotOverwriteNewerCatalog() {
+        val fetchCount = AtomicInteger()
+        val olderRefreshStarted = CountDownLatch(1)
+        val finishOlderRefresh = CountDownLatch(1)
+        val manager = RepositoryManager(InMemoryRepositoryStore(), RepositoryIndexSource { repository ->
+            when (fetchCount.incrementAndGet()) {
+                1 -> fetched(indexJson(versionCode = 1), repository)
+                2 -> {
+                    olderRefreshStarted.countDown()
+                    check(finishOlderRefresh.await(5, TimeUnit.SECONDS))
+                    fetched(indexJson(versionCode = 2), repository)
+                }
+                else -> fetched(indexJson(versionCode = 3), repository)
+            }
+        })
+        manager.addRepository("https://example.org/extensions")
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val olderRefresh = executor.submit<RepositoryCatalogSnapshot> {
+                manager.refreshRepository("https://example.org/extensions")
+            }
+            assertTrue(olderRefreshStarted.await(5, TimeUnit.SECONDS))
+
+            val newerRefresh = executor.submit<RepositoryCatalogSnapshot> {
+                manager.refreshRepository("https://example.org/extensions")
+            }
+            assertEquals(3L, newerRefresh.get(5, TimeUnit.SECONDS).extensions.single().versionCode)
+
+            finishOlderRefresh.countDown()
+            assertEquals(3L, olderRefresh.get(5, TimeUnit.SECONDS).extensions.single().versionCode)
+            assertEquals(3L, manager.repositories().single().extensions.single().versionCode)
+        } finally {
+            finishOlderRefresh.countDown()
             executor.shutdownNow()
         }
     }

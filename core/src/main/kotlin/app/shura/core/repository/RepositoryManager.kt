@@ -69,10 +69,34 @@ class RepositoryManager(
         }
         val validated = fetchAndParse(repository)
         val persisted = validated.copy(lastUpdated = Instant.now())
-        catalogCacheStore.save(persisted)
         return synchronized(this) {
             require(repository.normalized !in catalogs) { "المستودع مضاف بالفعل" }
-            store.save(catalogs.values.map { it.repository.inputUrl } + repository.inputUrl)
+            try {
+                catalogCacheStore.save(persisted)
+            } catch (error: Exception) {
+                runCatching { catalogCacheStore.remove(repository.normalized) }
+                    .onFailure { cleanupError ->
+                        LOGGER.log(
+                            Level.WARNING,
+                            "Unable to clean failed repository catalog cache: ${repository.normalized}",
+                            cleanupError,
+                        )
+                    }
+                throw error
+            }
+            try {
+                store.save(catalogs.values.map { it.repository.inputUrl } + repository.inputUrl)
+            } catch (error: Exception) {
+                runCatching { catalogCacheStore.remove(repository.normalized) }
+                    .onFailure { cleanupError ->
+                        LOGGER.log(
+                            Level.WARNING,
+                            "Unable to remove uncommitted repository catalog cache: ${repository.normalized}",
+                            cleanupError,
+                        )
+                    }
+                throw error
+            }
             persisted.also { catalogs[repository.normalized] = it }
         }
     }
@@ -86,10 +110,22 @@ class RepositoryManager(
             require(replacement.normalized !in catalogs) { "رابط المستودع الجديد مضاف بالفعل" }
         }
         val validated = fetchAndParse(replacement).copy(lastUpdated = Instant.now())
-        catalogCacheStore.save(validated)
         return synchronized(this) {
             require(existing.normalized in catalogs) { "تم حذف المستودع أثناء التعديل" }
             require(replacement.normalized !in catalogs) { "رابط المستودع الجديد أضيف أثناء التعديل" }
+            try {
+                catalogCacheStore.save(validated)
+            } catch (error: Exception) {
+                runCatching { catalogCacheStore.remove(replacement.normalized) }
+                    .onFailure { cleanupError ->
+                        LOGGER.log(
+                            Level.WARNING,
+                            "Unable to clean failed replacement catalog cache: ${replacement.normalized}",
+                            cleanupError,
+                        )
+                    }
+                throw error
+            }
             val savedUrls = catalogs.values.map { snapshot ->
                 if (snapshot.repository.normalized == existing.normalized) {
                     replacement.inputUrl
@@ -97,7 +133,19 @@ class RepositoryManager(
                     snapshot.repository.inputUrl
                 }
             }
-            store.save(savedUrls)
+            try {
+                store.save(savedUrls)
+            } catch (error: Exception) {
+                runCatching { catalogCacheStore.remove(replacement.normalized) }
+                    .onFailure { cleanupError ->
+                        LOGGER.log(
+                            Level.WARNING,
+                            "Unable to remove uncommitted replacement catalog cache: ${replacement.normalized}",
+                            cleanupError,
+                        )
+                    }
+                throw error
+            }
             catalogs.remove(existing.normalized)
             catalogs[replacement.normalized] = validated
             try {
@@ -167,15 +215,14 @@ class RepositoryManager(
             if (normalized !in catalogs) return@synchronized false
             store.save(catalogs.filterKeys { it != normalized }.values.map { it.repository.inputUrl })
             catalogs.remove(normalized)
+            try {
+                catalogCacheStore.remove(normalized)
+            } catch (error: Exception) {
+                LOGGER.log(Level.WARNING, "Unable to remove repository catalog cache: $normalized", error)
+            }
             true
         }
-        if (!removed) return false
-        try {
-            catalogCacheStore.remove(normalized)
-        } catch (error: Exception) {
-            LOGGER.log(Level.WARNING, "Unable to remove repository catalog cache: $normalized", error)
-        }
-        return true
+        return removed
     }
 
     fun refreshRepository(url: String): RepositoryCatalogSnapshot {
@@ -208,9 +255,21 @@ class RepositoryManager(
                 },
             )
         }
-        if (refreshed.error == null) catalogCacheStore.save(refreshed)
         return synchronized(this) {
-            if (repository.normalized !in catalogs) return@synchronized refreshed
+            val current = catalogs[repository.normalized]
+                ?: throw IllegalStateException("تم حذف المستودع أثناء التحديث: ${repository.normalized}")
+            if (current !== previous) return@synchronized current
+            if (refreshed.error == null) {
+                try {
+                    catalogCacheStore.save(refreshed)
+                } catch (error: Exception) {
+                    LOGGER.log(
+                        Level.WARNING,
+                        "Unable to persist refreshed repository catalog cache: ${repository.normalized}",
+                        error,
+                    )
+                }
+            }
             catalogs[repository.normalized] = refreshed
             refreshed
         }
