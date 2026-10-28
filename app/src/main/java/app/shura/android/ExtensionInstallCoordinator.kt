@@ -22,6 +22,7 @@ data class ApkArchiveMetadata(
     val versionName: String?,
     val isMihonExtension: Boolean,
     val signerSha256: Set<String>,
+    val isNsfw: Boolean = false,
 )
 
 data class VerifiedExtensionApk(
@@ -193,6 +194,9 @@ class ExtensionInstallCoordinator(
             }
             require(archive.isMihonExtension) {
                 "هذا APK لا يعلن بيانات إضافة Mihon المتوافقة"
+            }
+            require(!archive.isNsfw) {
+                "رفض تثبيت APK مصنف كمحتوى للبالغين في بيانات الإضافة"
             }
             require(archive.signerSha256.isNotEmpty()) { "تعذر التحقق من توقيع APK" }
             if (installedSignerSha256.isNotEmpty()) {

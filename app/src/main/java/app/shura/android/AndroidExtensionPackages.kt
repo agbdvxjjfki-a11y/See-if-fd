@@ -19,6 +19,7 @@ data class InstalledExtensionPackage(
     val versionCode: Long,
     val isMihonExtension: Boolean,
     val signerSha256: Set<String>,
+    val isNsfw: Boolean = false,
 )
 
 class AndroidExtensionPackages(private val context: Context) {
@@ -45,6 +46,7 @@ class AndroidExtensionPackages(private val context: Context) {
             versionName = info.versionName,
             isMihonExtension = info.isMihonExtensionPackage(),
             signerSha256 = signerCertificates.map(::sha256).toSet(),
+            isNsfw = info.isNsfwExtensionPackage(),
         )
     }
 
@@ -125,10 +127,14 @@ class AndroidExtensionPackages(private val context: Context) {
         versionCode = versionCodeLongCompat(),
         isMihonExtension = isMihonExtensionPackage(),
         signerSha256 = signatureBytes().map(::sha256).toSet(),
+        isNsfw = isNsfwExtensionPackage(),
     )
 
     private fun PackageInfo.isMihonExtensionPackage(): Boolean =
         reqFeatures.orEmpty().any { it.name == MIHON_EXTENSION_FEATURE }
+
+    private fun PackageInfo.isNsfwExtensionPackage(): Boolean =
+        applicationInfo?.metaData?.getInt(MIHON_EXTENSION_NSFW_METADATA, 0) != 0
 
     private fun PackageInfo.signatureBytes(): List<ByteArray> =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -170,5 +176,6 @@ class AndroidExtensionPackages(private val context: Context) {
         const val EXTRA_INSTALL_RESULT_STATUS = "last_status"
         const val EXTRA_INSTALL_RESULT_MESSAGE = "last_message"
         private const val MIHON_EXTENSION_FEATURE = "tachiyomi.extension"
+        private const val MIHON_EXTENSION_NSFW_METADATA = "tachiyomi.extension.nsfw"
     }
 }

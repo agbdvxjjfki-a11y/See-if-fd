@@ -99,6 +99,10 @@ class ExtensionInstallCoordinatorTest {
             coordinator(bytes, archive(isMihonExtension = false))
                 .prepare(descriptor.copy(apkSha256 = null), onProgress = {})
         }
+        assertFailsWith<IllegalArgumentException> {
+            coordinator(bytes, archive().copy(isNsfw = true))
+                .prepare(descriptor.copy(apkSha256 = null), onProgress = {})
+        }
         Unit
     }
 
@@ -254,6 +258,17 @@ class ExtensionInstallCoordinatorTest {
                 signerSha256 = emptySet(),
             ),
         )
+        val adult = extensionOperationForInstalledPackage(
+            descriptor,
+            InstalledExtensionPackage(
+                packageName = descriptor.packageName,
+                versionName = descriptor.version,
+                versionCode = descriptor.versionCode,
+                isMihonExtension = true,
+                signerSha256 = setOf("trusted-signer"),
+                isNsfw = true,
+            ),
+        )
         val wrongPackage = extensionOperationForInstalledPackage(
             descriptor,
             InstalledExtensionPackage(
@@ -278,6 +293,7 @@ class ExtensionInstallCoordinatorTest {
         assertEquals(ExtensionOperationPhase.UPDATE_AVAILABLE, update.phase)
         assertEquals(ExtensionOperationPhase.INCOMPATIBLE, incompatible.phase)
         assertEquals(ExtensionOperationPhase.INCOMPATIBLE, wrongPackage.phase)
+        assertEquals(ExtensionOperationPhase.INCOMPATIBLE, adult.phase)
         assertEquals(ExtensionOperationPhase.INSTALLED, newerInstalled.phase)
     }
 

@@ -11,6 +11,7 @@ internal fun extensionOperationForInstalledPackage(
         installed == null -> ExtensionOperationPhase.NOT_INSTALLED
         installed.packageName != extension.packageName -> ExtensionOperationPhase.INCOMPATIBLE
         !installed.isMihonExtension -> ExtensionOperationPhase.INCOMPATIBLE
+        installed.isNsfw -> ExtensionOperationPhase.INCOMPATIBLE
         extension.versionCode > installed.versionCode -> ExtensionOperationPhase.UPDATE_AVAILABLE
         else -> ExtensionOperationPhase.INSTALLED
     }
