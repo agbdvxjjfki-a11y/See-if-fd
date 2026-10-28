@@ -2,6 +2,9 @@ package app.shura.android
 
 import android.app.Application
 import android.content.Context
+import android.content.pm.PackageInstaller
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.shura.core.content.ContentPolicyEngine
@@ -14,11 +17,13 @@ import app.shura.core.repository.RepositoryManager
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Job
 import org.json.JSONArray
 
 data class ShuraUiState(
@@ -37,6 +42,8 @@ data class ShuraUiState(
     val darkTheme: Boolean = false,
     val language: String = "ar",
     val initialized: Boolean = false,
+    val installedPackages: Map<String, InstalledExtensionPackage> = emptyMap(),
+    val extensionOperations: Map<String, ExtensionOperationState> = emptyMap(),
 ) {
     fun extensionCatalog(): List<ExtensionDescriptor> =
         repositories.asSequence()
@@ -67,13 +74,49 @@ data class ShuraUiState(
     }
 }
 
+enum class ExtensionOperationPhase {
+    DOWNLOADING,
+    VERIFYING,
+    NEED_INSTALL_PERMISSION,
+    AWAITING_ANDROID,
+    REMOVAL_PENDING,
+    INSTALLED,
+    UPDATE_AVAILABLE,
+    NOT_INSTALLED,
+    INCOMPATIBLE,
+    FAILED,
+}
+
+data class ExtensionOperationState(
+    val phase: ExtensionOperationPhase,
+    val downloadedBytes: Long = 0,
+    val totalBytes: Long? = null,
+    val message: String? = null,
+)
+
 class ShuraViewModel(application: Application) : AndroidViewModel(application) {
     private val preferences = application.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
     private val mutableState = MutableStateFlow(initialState())
+    private val packageAccess = AndroidExtensionPackages(application)
+    private val installCoordinator = ExtensionInstallCoordinator(
+        cacheDirectory = application.cacheDir,
+        downloader = HttpsApkDownloader(),
+        archiveInspector = packageAccess::inspectArchive,
+    )
+    private val contentPolicy = ContentPolicyEngine()
+    private val installPreferences = application.getSharedPreferences(
+        AndroidExtensionPackages.INSTALL_RESULTS_PREFERENCES,
+        Context.MODE_PRIVATE,
+    )
+    private val preparedApks = mutableMapOf<String, VerifiedExtensionApk>()
+    private val installJobs = mutableMapOf<String, Job>()
     val state: StateFlow<ShuraUiState> = mutableState.asStateFlow()
     private var manager: RepositoryManager? = null
 
     init {
+        viewModelScope.launch {
+            PackageInstallEvents.events.collect { refreshInstalledExtensions() }
+        }
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
@@ -91,6 +134,7 @@ class ShuraViewModel(application: Application) : AndroidViewModel(application) {
                     repositories = repositories,
                     initialized = true,
                 )
+                refreshInstalledExtensions()
             }.onFailure { error ->
                 mutableState.value = mutableState.value.copy(
                     initialized = true,
@@ -180,7 +224,8 @@ class ShuraViewModel(application: Application) : AndroidViewModel(application) {
                         repositoryError = error.message ?: error.javaClass.simpleName,
                     )
                 }
-            endRepositoryOperation()
+                refreshInstalledExtensions()
+                endRepositoryOperation()
         }
     }
 
@@ -199,6 +244,7 @@ class ShuraViewModel(application: Application) : AndroidViewModel(application) {
                     repositoryError = error.message ?: error.javaClass.simpleName,
                 )
             }
+            refreshInstalledExtensions()
             endRepositoryOperation()
         }
     }
@@ -220,6 +266,7 @@ class ShuraViewModel(application: Application) : AndroidViewModel(application) {
                     repositoryError = error.message ?: error.javaClass.simpleName,
                 )
             }
+            refreshInstalledExtensions()
             endRepositoryOperation()
         }
     }
@@ -244,6 +291,288 @@ class ShuraViewModel(application: Application) : AndroidViewModel(application) {
             }
             mutableState.value = mutableState.value.copy(libraryTitles = updated)
         }
+    }
+
+    fun installExtension(packageName: String, repositoryUrl: String? = null) {
+        if (installJobs[packageName]?.isActive == true) return
+        val extension = mutableState.value.findExtension(packageName, repositoryUrl)
+        if (extension == null || contentPolicy.evaluate(extension).isBlocked) {
+            updateExtensionOperation(
+                packageName,
+                ExtensionOperationState(
+                    ExtensionOperationPhase.FAILED,
+                    message = "الإضافة غير موجودة في الفهرس المسموح أو رُفضت وفق سياسة المحتوى",
+                ),
+            )
+            return
+        }
+        val installed = mutableState.value.installedPackages[packageName]
+        if (installed != null && !installed.isMihonExtension) {
+            updateExtensionOperation(
+                packageName,
+                ExtensionOperationState(ExtensionOperationPhase.INCOMPATIBLE, message = "الحزمة المثبتة ليست إضافة Mihon معروفة"),
+            )
+            return
+        }
+        if (installed != null && installed.versionCode >= extension.versionCode) {
+            updateExtensionOperation(packageName, ExtensionOperationState(ExtensionOperationPhase.INSTALLED))
+            return
+        }
+        preparedApks.remove(packageName)?.file?.delete()
+        updateExtensionOperation(packageName, ExtensionOperationState(ExtensionOperationPhase.DOWNLOADING))
+        lateinit var installJob: Job
+        installJob = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            try {
+                val prepared = withContext(Dispatchers.IO) {
+                    installCoordinator.prepare(
+                        extension = extension,
+                        installedSignerSha256 = installed?.signerSha256.orEmpty(),
+                        onProgress = { progress ->
+                            updateExtensionOperation(
+                                packageName,
+                                ExtensionOperationState(
+                                    ExtensionOperationPhase.DOWNLOADING,
+                                    progress.downloadedBytes,
+                                    progress.totalBytes,
+                                ),
+                            )
+                        },
+                        onVerifying = {
+                            updateExtensionOperation(
+                                packageName,
+                                ExtensionOperationState(ExtensionOperationPhase.VERIFYING),
+                            )
+                        },
+                    )
+                }
+                preparedApks[packageName]?.file?.delete()
+                preparedApks[packageName] = prepared
+                val stillAllowed = mutableState.value.findExtension(packageName, extension.repositoryUrl)
+                if (stillAllowed == null ||
+                    stillAllowed.apkUrl != extension.apkUrl ||
+                    stillAllowed.version != extension.version ||
+                    stillAllowed.versionCode != extension.versionCode ||
+                    stillAllowed.apkSha256 != extension.apkSha256 ||
+                    stillAllowed.apkSignerSha256 != extension.apkSignerSha256 ||
+                    contentPolicy.evaluate(stillAllowed).isBlocked
+                ) {
+                    prepared.file.delete()
+                    preparedApks.remove(packageName)
+                    error("تغير فهرس الإضافة أثناء التنزيل؛ حدّث الفهرس وحاول مجددًا")
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                    !getApplication<Application>().packageManager.canRequestPackageInstalls()
+                ) {
+                    updateExtensionOperation(
+                        packageName,
+                        ExtensionOperationState(ExtensionOperationPhase.NEED_INSTALL_PERMISSION),
+                    )
+                } else {
+                    submitPreparedInstall(packageName)
+                }
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                updateExtensionOperation(
+                    packageName,
+                    ExtensionOperationState(ExtensionOperationPhase.FAILED, message = error.message ?: "تعذر تجهيز ملف APK للتثبيت"),
+                )
+            } finally {
+                if (installJobs[packageName] === installJob) installJobs.remove(packageName)
+            }
+        }
+        installJobs[packageName] = installJob
+        installJob.start()
+    }
+
+    fun cancelExtensionInstall(packageName: String) {
+        installJobs.remove(packageName)?.cancel()
+        preparedApks.remove(packageName)?.file?.delete()
+        val extension = mutableState.value.findExtension(packageName)
+        val installed = mutableState.value.installedPackages[packageName]
+        updateExtensionOperation(
+            packageName,
+            extension?.let { extensionOperationForInstalledPackage(it, installed) }
+                ?: ExtensionOperationState(ExtensionOperationPhase.NOT_INSTALLED),
+        )
+    }
+
+    fun submitPreparedInstall(packageName: String) {
+        val prepared = preparedApks[packageName]
+        if (prepared == null) {
+            updateExtensionOperation(
+                packageName,
+                ExtensionOperationState(ExtensionOperationPhase.FAILED, message = "انتهت صلاحية ملف APK؛ أعد التنزيل"),
+            )
+            return
+        }
+        val currentExtension = mutableState.value.findExtension(packageName, prepared.descriptor.repositoryUrl)
+        if (currentExtension == null ||
+            currentExtension.apkUrl != prepared.descriptor.apkUrl ||
+            currentExtension.version != prepared.descriptor.version ||
+            currentExtension.versionCode != prepared.descriptor.versionCode ||
+            currentExtension.apkSha256 != prepared.descriptor.apkSha256 ||
+            currentExtension.apkSignerSha256 != prepared.descriptor.apkSignerSha256 ||
+            contentPolicy.evaluate(currentExtension).isBlocked
+        ) {
+            prepared.file.delete()
+            preparedApks.remove(packageName)
+            updateExtensionOperation(
+                packageName,
+                ExtensionOperationState(ExtensionOperationPhase.FAILED, message = "لم يعد هذا الإصدار مسموحًا أو موجودًا في الفهرس"),
+            )
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            !getApplication<Application>().packageManager.canRequestPackageInstalls()
+        ) {
+            updateExtensionOperation(
+                packageName,
+                ExtensionOperationState(ExtensionOperationPhase.NEED_INSTALL_PERMISSION),
+            )
+            return
+        }
+        updateExtensionOperation(packageName, ExtensionOperationState(ExtensionOperationPhase.AWAITING_ANDROID))
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val installed = packageAccess.inspectInstalled(packageName)
+                    require(installed == null || installed.isMihonExtension) {
+                        "الحزمة المثبتة ليست إضافة Mihon معروفة"
+                    }
+                    require(installed == null || installed.versionCode < prepared.archive.versionCode) {
+                        "يوجد إصدار مثبت أحدث أو مساوٍ؛ لن يخفض Shura الإصدار"
+                    }
+                    require(
+                        installed == null ||
+                            prepared.archive.signerSha256.any(installed.signerSha256::contains),
+                    ) { "توقيع APK الجديد لا يطابق توقيع الإضافة المثبتة" }
+                    packageAccess.install(prepared)
+                }
+                preparedApks.remove(packageName)
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                prepared.file.delete()
+                preparedApks.remove(packageName)
+                updateExtensionOperation(
+                    packageName,
+                    ExtensionOperationState(ExtensionOperationPhase.FAILED, message = error.message ?: "تعذر بدء التثبيت في Android"),
+                )
+            }
+        }
+    }
+
+    fun markInstallPermissionDenied(packageName: String) {
+        updateExtensionOperation(
+            packageName,
+            ExtensionOperationState(
+                ExtensionOperationPhase.NEED_INSTALL_PERMISSION,
+                message = "لم يمنح Android إذن تثبيت التطبيقات من Shura",
+            ),
+        )
+    }
+
+    fun markPackageActionFailed(packageName: String, message: String) {
+        updateExtensionOperation(
+            packageName,
+            ExtensionOperationState(ExtensionOperationPhase.FAILED, message = message),
+        )
+    }
+
+    fun openUninstallSettings(packageName: String): android.content.Intent? {
+        val installed = mutableState.value.installedPackages[packageName] ?: return null
+        if (!installed.isMihonExtension) {
+            updateExtensionOperation(
+                packageName,
+                ExtensionOperationState(ExtensionOperationPhase.INCOMPATIBLE, message = "لن يزيل Shura حزمة لا يتعرف عليها كإضافة Mihon"),
+            )
+            return null
+        }
+        updateExtensionOperation(packageName, ExtensionOperationState(ExtensionOperationPhase.REMOVAL_PENDING))
+        return packageAccess.uninstallSettingsIntent(packageName)
+    }
+
+    fun refreshInstalledExtensions() {
+        val packageNames = mutableState.value.extensionCatalog().map { it.packageName }.distinct()
+        if (packageNames.isEmpty()) return
+        viewModelScope.launch {
+            val installed = try {
+                withContext(Dispatchers.IO) {
+                    packageNames.mapNotNull { packageName ->
+                        packageAccess.inspectInstalled(packageName)?.let { packageName to it }
+                    }.toMap()
+                }
+            } catch (error: SecurityException) {
+                packageNames.forEach { packageName ->
+                    updateExtensionOperation(
+                        packageName,
+                        ExtensionOperationState(
+                            ExtensionOperationPhase.FAILED,
+                            message = error.message ?: "لا يسمح Android بالتحقق من الحزم المثبتة",
+                        ),
+                    )
+                }
+                return@launch
+            }
+            mutableState.value = mutableState.value.copy(installedPackages = installed)
+            reconcileInstallResult(installed)
+            packageNames.forEach { packageName ->
+                val operation = mutableState.value.extensionOperations[packageName]
+                if (operation?.phase !in setOf(
+                        ExtensionOperationPhase.DOWNLOADING,
+                        ExtensionOperationPhase.VERIFYING,
+                        ExtensionOperationPhase.AWAITING_ANDROID,
+                        ExtensionOperationPhase.NEED_INSTALL_PERMISSION,
+                    )
+                ) {
+                    val extension = mutableState.value.findExtension(packageName) ?: return@forEach
+                    val packageInfo = installed[packageName]
+                    updateExtensionOperation(
+                        packageName,
+                        extensionOperationForInstalledPackage(extension, packageInfo),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun reconcileInstallResult(installed: Map<String, InstalledExtensionPackage>) {
+        val packageName = installPreferences.getString(
+            AndroidExtensionPackages.EXTRA_INSTALL_RESULT_PACKAGE,
+            null,
+        ) ?: return
+        val expectedVersion = installPreferences.getLong(
+            AndroidExtensionPackages.EXTRA_INSTALL_RESULT_VERSION,
+            -1L,
+        )
+        val result = installPreferences.getInt(
+            AndroidExtensionPackages.EXTRA_INSTALL_RESULT_STATUS,
+            PackageInstaller.STATUS_FAILURE,
+        )
+        updateExtensionOperation(
+            packageName,
+            extensionInstallOutcome(
+                status = result,
+                expectedPackage = packageName,
+                expectedVersionCode = expectedVersion,
+                installed = installed[packageName],
+                systemMessage = installPreferences.getString(
+                    AndroidExtensionPackages.EXTRA_INSTALL_RESULT_MESSAGE,
+                    null,
+                ),
+            ),
+        )
+        installPreferences.edit()
+            .remove(AndroidExtensionPackages.EXTRA_INSTALL_RESULT_PACKAGE)
+            .remove(AndroidExtensionPackages.EXTRA_INSTALL_RESULT_VERSION)
+            .remove(AndroidExtensionPackages.EXTRA_INSTALL_RESULT_STATUS)
+            .remove(AndroidExtensionPackages.EXTRA_INSTALL_RESULT_MESSAGE)
+            .apply()
+    }
+
+    private fun updateExtensionOperation(packageName: String, operation: ExtensionOperationState) {
+        mutableState.value = mutableState.value.copy(
+            extensionOperations = mutableState.value.extensionOperations + (packageName to operation),
+        )
     }
 
     fun setAutoFlipEnabled(enabled: Boolean) {

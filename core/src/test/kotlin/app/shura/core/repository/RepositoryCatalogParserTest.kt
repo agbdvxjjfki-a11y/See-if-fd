@@ -61,6 +61,24 @@ class RepositoryCatalogParserTest {
     }
 
     @Test
+    fun parsesAndValidatesOptionalApkIntegrityReferences() {
+        val digest = "a".repeat(64)
+        val entry = parser.parse(
+            """[{"name":"Signed","pkg":"org.example.signed","apk":"signed.apk","lang":"en","version":"1","code":1,"sha256":"$digest","signingKey":"$digest"}]""",
+            repository,
+        ).single()
+
+        assertEquals(digest, entry.apkSha256)
+        assertEquals(digest, entry.apkSignerSha256)
+        assertFailsWith<IllegalArgumentException> {
+            parser.parse(
+                """[{"name":"Invalid digest","pkg":"org.example.invalid","apk":"invalid.apk","lang":"en","version":"1","code":1,"sha256":"not-a-digest"}]""",
+                repository,
+            )
+        }
+    }
+
+    @Test
     fun repositoryAddressRequiresHttpsAndNormalizesDuplicates() {
         assertFailsWith<IllegalArgumentException> { RepositoryAddress.parse("http://example.org/repo") }
         assertEquals(
@@ -114,6 +132,7 @@ class RepositoryCatalogParserTest {
         val index = Index.newBuilder()
             .setName("Keiyoushi")
             .setBadgeLabel("KEI")
+            .setSigningKey("b".repeat(64))
             .setExtensionList(
                 ExtensionList.newBuilder().addExtensions(
                     ProtoExtension.newBuilder()
@@ -138,6 +157,7 @@ class RepositoryCatalogParserTest {
         val parsed = parser.parse(fetched, repository)
 
         assertEquals("Keiyoushi", parsed.name)
+        assertEquals("b".repeat(64), parsed.extensions.single().apkSignerSha256)
         assertEquals(1, parsed.extensions.size)
         assertEquals(42L, parsed.extensions.single().versionCode)
         assertEquals(

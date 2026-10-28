@@ -9,8 +9,9 @@ The Compose app includes:
 - Arabic-first navigation with Arabic/English resources, RTL layout, and a dark theme option.
 - A local title list saved in app preferences. These are user-entered titles, not fetched manga or chapter records.
 - Repository management backed by `RepositoryManager`, `RepositoryIndexClient`, and app-private `FileRepositoryConfigurationStore` storage. Network/index work runs off the UI thread.
-- Extension catalog browsing with policy-blocked entries removed before repository snapshots are exposed, and re-filtered in search and detail lookup. Allowed entries can be searched, filtered by language, sorted, and opened for metadata details. Icons load from HTTPS with bounded size/timeouts and fall back safely. APK installation, installed-package discovery, chapter downloads, and Mihon source execution are not implemented.
-- A downloads destination that explicitly explains the current limitation rather than presenting fake tasks or controls.
+- Extension catalog browsing with policy-blocked entries removed before repository snapshots are exposed, and re-filtered in search and detail lookup. Allowed entries can be searched, filtered by language, sorted, and opened for metadata details. Icons load from HTTPS with bounded size/timeouts and fall back safely.
+- APK downloads are limited to HTTPS and 128 MiB, checked for package ID, version, Mihon extension feature, signing certificate, and any trusted SHA-256 references in the index. Installation uses Android `PackageInstaller` and requires Android's user confirmation; Shura only reports success after Android confirms and the installed package is re-checked. Package discovery requires `QUERY_ALL_PACKAGES` because catalog package IDs are dynamic; this side-loaded build is not configured for Google Play distribution.
+- A downloads destination that shows active extension download/install operations. Chapter downloads are not implemented.
 - A reader for multiple image documents selected by the user, with paging, pinch zoom, retry for unreadable images, and auto-flip connected to the core `AutoFlipController`. The original files are not changed; decoding is downsampled transiently for display.
 - Persisted reader settings and language/theme preferences.
 
@@ -20,7 +21,7 @@ The protobuf reader uses the published Mihon/Tachiyomix `index.proto` schema, in
 
 For example, the community-maintained Keiyoushi repository publishes `https://github.com/keiyoushi/extensions/raw/repo/index.pb` and `https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.min.json`. Keiyoushi is not an official Mihon repository. The Shura source-code GitHub repository does not publish an extension index and is not pre-added as one.
 
-Reading a catalog does not mean that APK installation or Mihon source execution is supported. Filtered catalog counts include only entries allowed by the metadata policy. That policy evaluates extension names, package names, source names/messages, repository NSFW classification, and any supplied description/tags; it does not inspect APK contents or page images and cannot guarantee detection of all inappropriate content.
+Reading a catalog does not mean that an extension source can run inside Shura. Mihon APK installation and package discovery are supported, but Shura does not yet include Mihon's extension runtime, API libraries, source class loader, or trust/update machinery; installed sources therefore cannot be used to browse manga. Filtered catalog counts include only entries allowed by the metadata policy. That policy evaluates extension names, package names, source names/messages, repository NSFW classification, and any supplied description/tags; it does not inspect APK contents or page images and cannot guarantee detection of all inappropriate content.
 
 ## Content and translation limits
 

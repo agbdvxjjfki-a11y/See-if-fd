@@ -2,8 +2,12 @@ package app.shura.android
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -47,6 +51,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -116,10 +121,26 @@ private enum class Destination {
 }
 
 class MainActivity : AppCompatActivity() {
+    private var shuraViewModel: ShuraViewModel? = null
+    private var permissionPackageName: String? = null
+    private val installPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        val packageName = permissionPackageName ?: return@registerForActivityResult
+        permissionPackageName = null
+        val viewModel = shuraViewModel ?: return@registerForActivityResult
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()) {
+            viewModel.submitPreparedInstall(packageName)
+        } else {
+            viewModel.markInstallPermissionDenied(packageName)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             val viewModel: ShuraViewModel = viewModel()
+            shuraViewModel = viewModel
             val state by viewModel.state.collectAsStateWithLifecycle()
             LaunchedEffect(state.language) {
                 AppCompatDelegate.setApplicationLocales(
@@ -134,9 +155,46 @@ class MainActivity : AppCompatActivity() {
                         LayoutDirection.Ltr
                     },
                 ) {
-                    ShuraApp(viewModel, state)
+                    ShuraApp(
+                        viewModel = viewModel,
+                        state = state,
+                        onRequestInstallPermission = ::requestInstallPermission,
+                        onOpenUninstallSettings = ::openUninstallSettings,
+                    )
                 }
             }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        shuraViewModel?.refreshInstalledExtensions()
+    }
+
+    private fun requestInstallPermission(packageName: String, viewModel: ShuraViewModel) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()) {
+            viewModel.submitPreparedInstall(packageName)
+            return
+        }
+        permissionPackageName = packageName
+        val intent = Intent(
+            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+            Uri.parse("package:${applicationContext.packageName}"),
+        )
+        try {
+            installPermissionLauncher.launch(intent)
+        } catch (_: ActivityNotFoundException) {
+            permissionPackageName = null
+            viewModel.markInstallPermissionDenied(packageName)
+        }
+    }
+
+    private fun openUninstallSettings(packageName: String, viewModel: ShuraViewModel) {
+        val intent = viewModel.openUninstallSettings(packageName) ?: return
+        try {
+            startActivity(intent)
+        } catch (_: ActivityNotFoundException) {
+            viewModel.markPackageActionFailed(packageName, "تعذر فتح إعدادات الحزمة في Android")
         }
     }
 }
@@ -161,7 +219,12 @@ private fun ShuraTheme(darkTheme: Boolean, content: @Composable () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ShuraApp(viewModel: ShuraViewModel, state: ShuraUiState) {
+private fun ShuraApp(
+    viewModel: ShuraViewModel,
+    state: ShuraUiState,
+    onRequestInstallPermission: (String, ShuraViewModel) -> Unit,
+    onOpenUninstallSettings: (String, ShuraViewModel) -> Unit,
+) {
     var destination by rememberSaveable { mutableStateOf(Destination.HOME) }
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
@@ -245,8 +308,14 @@ private fun ShuraApp(viewModel: ShuraViewModel, state: ShuraUiState) {
             )
             Destination.LIBRARY -> LibraryScreen(viewModel, state, padding)
             Destination.REPOSITORIES -> RepositoriesScreen(viewModel, state, padding)
-            Destination.EXTENSIONS -> ExtensionsScreen(state, padding)
-            Destination.DOWNLOADS -> DownloadsScreen(padding)
+            Destination.EXTENSIONS -> ExtensionsScreen(
+                viewModel,
+                state,
+                padding,
+                onRequestInstallPermission,
+                onOpenUninstallSettings,
+            )
+            Destination.DOWNLOADS -> DownloadsScreen(viewModel, state, padding)
             Destination.READER -> ReaderScreen(viewModel, state, padding)
             Destination.SETTINGS -> SettingsScreen(viewModel, state, padding)
         }
@@ -604,7 +673,13 @@ private fun RepositoryCard(
 }
 
 @Composable
-private fun ExtensionsScreen(state: ShuraUiState, padding: PaddingValues) {
+private fun ExtensionsScreen(
+    viewModel: ShuraViewModel,
+    state: ShuraUiState,
+    padding: PaddingValues,
+    onRequestInstallPermission: (String, ShuraViewModel) -> Unit,
+    onOpenUninstallSettings: (String, ShuraViewModel) -> Unit,
+) {
     var query by rememberSaveable { mutableStateOf("") }
     var selectedLanguage by rememberSaveable { mutableStateOf<String?>(null) }
     var sortByLatest by rememberSaveable { mutableStateOf(false) }
@@ -664,7 +739,9 @@ private fun ExtensionsScreen(state: ShuraUiState, padding: PaddingValues) {
                 contentPadding = PaddingValues(bottom = 16.dp),
             ) {
                 items(extensions, key = { "${it.repositoryUrl}:${it.packageName}" }) { extension ->
-                    ExtensionCard(extension) { selectedExtension = extension }
+                    ExtensionCard(extension, state.extensionOperations[extension.packageName]) {
+                        selectedExtension = extension
+                    }
                 }
             }
         }
@@ -672,7 +749,15 @@ private fun ExtensionsScreen(state: ShuraUiState, padding: PaddingValues) {
     selectedExtension?.let { extension ->
         val stillVisible = state.findExtension(extension.packageName, extension.repositoryUrl)
         if (stillVisible != null) {
-            ExtensionDetailsDialog(extension = stillVisible) { selectedExtension = null }
+            ExtensionDetailsDialog(
+                extension = stillVisible,
+                state = state,
+                onInstall = { viewModel.installExtension(stillVisible.packageName, stillVisible.repositoryUrl) },
+                onCancelInstall = { viewModel.cancelExtensionInstall(stillVisible.packageName) },
+                onRequestPermission = { onRequestInstallPermission(stillVisible.packageName, viewModel) },
+                onUninstall = { onOpenUninstallSettings(stillVisible.packageName, viewModel) },
+                onDismiss = { selectedExtension = null },
+            )
         } else {
             selectedExtension = null
         }
@@ -705,7 +790,11 @@ private fun LanguageFilterRow(
 }
 
 @Composable
-private fun ExtensionCard(extension: ExtensionDescriptor, onClick: () -> Unit) {
+private fun ExtensionCard(
+    extension: ExtensionDescriptor,
+    operation: ExtensionOperationState?,
+    onClick: () -> Unit,
+) {
     Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
@@ -728,6 +817,22 @@ private fun ExtensionCard(extension: ExtensionDescriptor, onClick: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(extension.packageName, style = MaterialTheme.typography.labelSmall)
+                Text(
+                    stringResource(operation.phaseResource()),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (operation?.phase == ExtensionOperationPhase.FAILED ||
+                        operation?.phase == ExtensionOperationPhase.INCOMPATIBLE
+                    ) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                )
+                if (operation?.phase == ExtensionOperationPhase.DOWNLOADING) {
+                    val progress = operation.totalBytes?.takeIf { it > 0 }?.let {
+                        (operation.downloadedBytes.toFloat() / it).coerceIn(0f, 1f)
+                    }
+                    LinearProgressIndicator(
+                        progress = { progress ?: 0f },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
         }
     }
@@ -817,7 +922,18 @@ private fun loadExtensionIcon(url: String): Bitmap? {
 }
 
 @Composable
-private fun ExtensionDetailsDialog(extension: ExtensionDescriptor, onDismiss: () -> Unit) {
+private fun ExtensionDetailsDialog(
+    extension: ExtensionDescriptor,
+    state: ShuraUiState,
+    onInstall: () -> Unit,
+    onCancelInstall: () -> Unit,
+    onRequestPermission: () -> Unit,
+    onUninstall: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val operation = state.extensionOperations[extension.packageName]
+        ?: ExtensionOperationState(ExtensionOperationPhase.NOT_INSTALLED)
+    val installed = state.installedPackages[extension.packageName]
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(extension.name) },
@@ -830,6 +946,37 @@ private fun ExtensionDetailsDialog(extension: ExtensionDescriptor, onDismiss: ()
                 Text(stringResource(R.string.extension_version, extension.version, extension.versionCode))
                 Text(stringResource(R.string.extension_language, extension.language))
                 Text(stringResource(R.string.extension_source, extension.repositoryUrl))
+                Text(stringResource(operation.phaseResource()), fontWeight = FontWeight.SemiBold)
+                operation.message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                if (installed?.isMihonExtension == true) {
+                    Text(
+                        stringResource(
+                            R.string.extension_installed_version,
+                            installed.versionName.orEmpty(),
+                            installed.versionCode,
+                        ),
+                    )
+                }
+                if (operation.phase == ExtensionOperationPhase.DOWNLOADING) {
+                    val progress = operation.totalBytes?.takeIf { it > 0 }?.let {
+                        (operation.downloadedBytes.toFloat() / it).coerceIn(0f, 1f)
+                    }
+                    LinearProgressIndicator(
+                        progress = { progress ?: 0f },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        if (operation.totalBytes != null) {
+                            stringResource(
+                                R.string.extension_download_progress,
+                                formatBytes(operation.downloadedBytes),
+                                formatBytes(operation.totalBytes),
+                            )
+                        } else {
+                            stringResource(R.string.extension_downloaded_bytes, formatBytes(operation.downloadedBytes))
+                        },
+                    )
+                }
                 if (extension.sources.isNotEmpty()) {
                     Text(stringResource(R.string.extension_sources_title), fontWeight = FontWeight.SemiBold)
                     extension.sources.forEach { source ->
@@ -841,22 +988,134 @@ private fun ExtensionDetailsDialog(extension: ExtensionDescriptor, onDismiss: ()
                         }
                     }
                 }
-                Text(stringResource(R.string.extension_not_installed_supported))
+                Text(stringResource(R.string.extension_runtime_unavailable))
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_close)) }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                when (operation.phase) {
+                    ExtensionOperationPhase.NOT_INSTALLED,
+                    ExtensionOperationPhase.UPDATE_AVAILABLE,
+                    ExtensionOperationPhase.FAILED -> TextButton(onClick = onInstall) {
+                        Text(
+                            stringResource(
+                                if (operation.phase == ExtensionOperationPhase.UPDATE_AVAILABLE) {
+                                    R.string.extension_action_update
+                                } else {
+                                    R.string.extension_action_install
+                                },
+                            ),
+                        )
+                    }
+                    ExtensionOperationPhase.NEED_INSTALL_PERMISSION -> {
+                        TextButton(onClick = onRequestPermission) {
+                            Text(stringResource(R.string.extension_action_permission))
+                        }
+                        TextButton(onClick = onCancelInstall) {
+                            Text(stringResource(R.string.action_cancel))
+                        }
+                    }
+                    ExtensionOperationPhase.DOWNLOADING,
+                    ExtensionOperationPhase.VERIFYING -> TextButton(onClick = onCancelInstall) {
+                        Text(stringResource(R.string.action_cancel))
+                    }
+                    ExtensionOperationPhase.INSTALLED -> TextButton(onClick = onUninstall) {
+                        Text(stringResource(R.string.extension_action_manage))
+                    }
+                    else -> Unit
+                }
+                TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_close)) }
+            }
         },
     )
 }
 
 @Composable
-private fun DownloadsScreen(padding: PaddingValues) {
-    EmptyState(
-        title = stringResource(R.string.downloads_unavailable_title),
-        body = stringResource(R.string.downloads_unavailable_body),
-        modifier = Modifier.fillMaxSize().padding(padding),
-    )
+private fun DownloadsScreen(viewModel: ShuraViewModel, state: ShuraUiState, padding: PaddingValues) {
+    val operations = state.extensionCatalog().distinctBy { it.packageName }.mapNotNull { extension ->
+        state.extensionOperations[extension.packageName]?.let { operation -> extension to operation }
+            ?.takeIf { (_, operation) ->
+                operation.phase in setOf(
+                    ExtensionOperationPhase.DOWNLOADING,
+                    ExtensionOperationPhase.VERIFYING,
+                    ExtensionOperationPhase.NEED_INSTALL_PERMISSION,
+                    ExtensionOperationPhase.AWAITING_ANDROID,
+                    ExtensionOperationPhase.REMOVAL_PENDING,
+                    ExtensionOperationPhase.FAILED,
+                )
+            }
+    }
+    if (operations.isEmpty()) {
+        EmptyState(
+            title = stringResource(R.string.downloads_empty_title),
+            body = stringResource(R.string.downloads_unavailable_body),
+            modifier = Modifier.fillMaxSize().padding(padding),
+        )
+    } else {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(vertical = 12.dp),
+        ) {
+            items(operations, key = { it.first.packageName }) { (extension, operation) ->
+                Card(Modifier.fillMaxWidth()) {
+                    Column(
+                        Modifier.fillMaxWidth().padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(extension.name, style = MaterialTheme.typography.titleMedium)
+                        Text(stringResource(operation.phaseResource()))
+                        operation.message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                        if (operation.phase == ExtensionOperationPhase.DOWNLOADING) {
+                            LinearProgressIndicator(Modifier.fillMaxWidth())
+                            Text(
+                                stringResource(
+                                    R.string.extension_download_progress,
+                                    formatBytes(operation.downloadedBytes),
+                                    formatBytes(operation.totalBytes ?: operation.downloadedBytes),
+                                ),
+                            )
+                        }
+                        if (operation.phase == ExtensionOperationPhase.DOWNLOADING ||
+                            operation.phase == ExtensionOperationPhase.NEED_INSTALL_PERMISSION
+                        ) {
+                            TextButton(onClick = { viewModel.cancelExtensionInstall(extension.packageName) }) {
+                                Text(stringResource(R.string.action_cancel))
+                            }
+                        }
+                        if (operation.phase == ExtensionOperationPhase.FAILED) {
+                            TextButton(
+                                onClick = {
+                                    viewModel.installExtension(extension.packageName, extension.repositoryUrl)
+                                },
+                            ) {
+                                Text(stringResource(R.string.extension_action_retry))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun ExtensionOperationState?.phaseResource(): Int = when (this?.phase) {
+    ExtensionOperationPhase.DOWNLOADING -> R.string.extension_status_downloading
+    ExtensionOperationPhase.VERIFYING -> R.string.extension_status_verifying
+    ExtensionOperationPhase.NEED_INSTALL_PERMISSION -> R.string.extension_status_permission
+    ExtensionOperationPhase.AWAITING_ANDROID -> R.string.extension_status_awaiting_android
+    ExtensionOperationPhase.REMOVAL_PENDING -> R.string.extension_status_removal_pending
+    ExtensionOperationPhase.INSTALLED -> R.string.extension_status_installed
+    ExtensionOperationPhase.UPDATE_AVAILABLE -> R.string.extension_status_update
+    ExtensionOperationPhase.INCOMPATIBLE -> R.string.extension_status_incompatible
+    ExtensionOperationPhase.FAILED -> R.string.extension_status_failed
+    ExtensionOperationPhase.NOT_INSTALLED, null -> R.string.extension_status_not_installed
+}
+
+private fun formatBytes(bytes: Long): String = when {
+    bytes < 1024L -> "$bytes B"
+    bytes < 1024L * 1024 -> "%.1f KB".format(bytes / 1024f)
+    else -> "%.1f MB".format(bytes / (1024f * 1024f))
 }
 
 @Composable

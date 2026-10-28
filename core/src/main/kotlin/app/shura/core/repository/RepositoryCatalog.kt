@@ -114,6 +114,8 @@ data class ExtensionDescriptor(
     val sources: List<RepositorySourceDescriptor> = emptyList(),
     val apkUrl: String? = null,
     val iconUrl: String? = null,
+    val apkSha256: String? = null,
+    val apkSignerSha256: String? = null,
 )
 
 data class ParsedRepositoryIndex(
@@ -212,6 +214,12 @@ class JsonRepositoryIndexParser {
             sources = item.sources(),
             apkUrl = apkUrl,
             iconUrl = item.optionalString("icon"),
+            apkSha256 = item.optionalString("sha256")?.also {
+                require(it.matches(Regex("[A-Fa-f0-9]{64}"))) { "بصمة APK غير صالحة" }
+            },
+            apkSignerSha256 = item.optionalString("signingKey")?.also {
+                require(it.matches(Regex("[A-Fa-f0-9]{64}"))) { "بصمة توقيع الإضافة غير صالحة" }
+            },
         )
     }
 
@@ -300,6 +308,7 @@ class ProtobufRepositoryIndexParser {
                 adultFlag = if (item.contentWarning == ContentWarning.CONTENT_WARNING_NSFW) 1 else 0,
                 sources = sources,
                 iconUrl = item.resources.iconUrl.takeIf(String::isNotBlank),
+                apkSignerSha256 = index.signingKey.takeIf { it.matches(Regex("[A-Fa-f0-9]{64}")) },
             )
         }
         return ParsedRepositoryIndex(
