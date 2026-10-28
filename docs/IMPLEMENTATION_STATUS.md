@@ -9,7 +9,7 @@ Checkpoint: 2026-10-28
 - Kotlin, Jetpack Compose, Material 3, Java 17, and the checked-in Gradle wrapper are retained.
 - Latest implementation checkpoint: `9fb65da` (`feat(app): add real MangaDex browsing and library progress`), pushed to `origin/work/shura-development`.
 - Repository-race checkpoint: `77da65d` (`fix(core): guard repository mutation races`).
-- The development branch was two commits ahead of its remote before the push; `77da65d` and `9fb65da` are now pushed. This status-document update is the only pending local change.
+- The development branch was two commits ahead of its remote before the push; `77da65d` and `9fb65da` are now pushed with the status update.
 
 ## Implemented and validated
 
