@@ -9,6 +9,7 @@ pluginManagement {
         id("com.android.application") version "8.13.2"
         id("org.jetbrains.kotlin.android") version "2.2.20"
         id("org.jetbrains.kotlin.plugin.compose") version "2.2.20"
+        id("com.google.protobuf") version "0.9.5"
     }
 }
 

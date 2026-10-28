@@ -2,12 +2,22 @@ package app.shura.core.repository
 
 import java.time.Instant
 import java.util.LinkedHashMap
+import java.util.logging.Level
+import java.util.logging.Logger
 
 data class RepositoryCatalogSnapshot(
     val repository: RepositoryAddress,
     val extensions: List<ExtensionDescriptor> = emptyList(),
     val lastUpdated: Instant? = null,
     val error: String? = null,
+    val storeName: String? = null,
+    val indexUrl: String? = null,
+    val contentType: String? = null,
+    val httpStatus: Int? = null,
+    val redirects: List<String> = emptyList(),
+    val redirectStatuses: List<Int> = emptyList(),
+    val bodyDownloaded: Boolean = false,
+    val fetchDiagnostics: List<IndexRequestDiagnostic> = emptyList(),
 )
 
 class RepositoryManager(
@@ -33,35 +43,89 @@ class RepositoryManager(
     fun addRepository(url: String): RepositoryCatalogSnapshot {
         val repository = RepositoryAddress.parse(url)
         require(repository.normalized !in catalogs) { "المستودع مضاف بالفعل" }
-        store.save(catalogs.keys.toList() + repository.normalized)
-        return RepositoryCatalogSnapshot(repository).also {
-            catalogs[repository.normalized] = it
+        val validated = fetchAndParse(repository)
+        store.save(catalogs.values.map { it.repository.inputUrl } + repository.inputUrl)
+        return validated.copy(lastUpdated = Instant.now()).also { catalogs[repository.normalized] = it }
+    }
+
+    fun testRepository(url: String): RepositoryCatalogSnapshot =
+        fetchAndParse(RepositoryAddress.parse(url))
+
+    private fun fetchAndParse(repository: RepositoryAddress): RepositoryCatalogSnapshot {
+        val fetched = indexSource.fetch(repository)
+        val parsed = try {
+            parser.parse(fetched, repository) { url ->
+                indexSource.fetchExternalList(url, repository.inputUrl)
+            }
+        } catch (error: Exception) {
+            val diagnostic = fetched.diagnostic
+            LOGGER.log(
+                Level.WARNING,
+                "Repository index downloaded but parsing failed: input=${diagnostic.inputUrl}, " +
+                    "final=${diagnostic.finalUrl}, status=${diagnostic.statusCode}, " +
+                    "contentType=${diagnostic.contentType}, bodyDownloaded=${diagnostic.bodyDownloaded}",
+                error,
+            )
+            throw RepositoryIndexParseException(
+                diagnostic = diagnostic,
+                message =
+                    "تم تنزيل الفهرس من ${diagnostic.finalUrl} بنجاح (HTTP ${diagnostic.statusCode}, " +
+                        "${diagnostic.contentType ?: "نوع محتوى غير معروف"}) لكن تعذر تحليله: " +
+                        (error.message ?: error.javaClass.simpleName),
+                cause = error,
+            )
         }
+        return RepositoryCatalogSnapshot(
+            repository = repository,
+            extensions = parsed.extensions,
+            storeName = parsed.name,
+            indexUrl = fetched.diagnostic.finalUrl,
+            contentType = fetched.contentType,
+            httpStatus = fetched.diagnostic.statusCode,
+            redirects = fetched.diagnostic.redirects,
+            redirectStatuses = fetched.diagnostic.redirectStatuses,
+            bodyDownloaded = fetched.diagnostic.bodyDownloaded,
+            fetchDiagnostics = fetched.attempts,
+        )
     }
 
     @Synchronized
     fun removeRepository(url: String): Boolean {
         val normalized = RepositoryAddress.parse(url).normalized
         if (normalized !in catalogs) return false
-        store.save(catalogs.keys.filterNot { it == normalized })
+        store.save(catalogs.filterKeys { it != normalized }.values.map { it.repository.inputUrl })
         catalogs.remove(normalized)
         return true
     }
 
     @Synchronized
     fun refreshRepository(url: String): RepositoryCatalogSnapshot {
-        val repository = RepositoryAddress.parse(url)
-        val previous = catalogs[repository.normalized]
+        val requestedRepository = RepositoryAddress.parse(url)
+        val previous = catalogs[requestedRepository.normalized]
             ?: throw IllegalArgumentException("المستودع غير مضاف")
+        val repository = previous.repository
         val refreshed = try {
-            val index = indexSource.fetch(repository)
-            previous.copy(
-                extensions = parser.parse(index, repository),
-                lastUpdated = Instant.now(),
-                error = null,
-            )
+            fetchAndParse(repository).copy(lastUpdated = Instant.now())
         } catch (error: Exception) {
-            previous.copy(error = error.message?.takeIf(String::isNotBlank) ?: error.javaClass.simpleName)
+            val diagnostic = when (error) {
+                is RepositoryIndexFetchException -> error.diagnostics.lastOrNull()
+                is RepositoryIndexParseException -> error.diagnostic
+                else -> null
+            }
+            previous.copy(
+                error = error.message?.takeIf(String::isNotBlank) ?: error.javaClass.simpleName,
+                indexUrl = diagnostic?.finalUrl ?: previous.indexUrl,
+                contentType = diagnostic?.contentType ?: previous.contentType,
+                httpStatus = diagnostic?.statusCode ?: previous.httpStatus,
+                redirects = diagnostic?.redirects ?: previous.redirects,
+                redirectStatuses = diagnostic?.redirectStatuses ?: previous.redirectStatuses,
+                bodyDownloaded = diagnostic?.bodyDownloaded ?: previous.bodyDownloaded,
+                fetchDiagnostics = when (error) {
+                    is RepositoryIndexFetchException -> error.diagnostics
+                    is RepositoryIndexParseException -> listOf(error.diagnostic)
+                    else -> previous.fetchDiagnostics
+                },
+            )
         }
         catalogs[repository.normalized] = refreshed
         return refreshed
@@ -99,4 +163,8 @@ class RepositoryManager(
                 installedVersionCodes[extension.packageName]?.let { extension.versionCode > it } == true
             }
             .toList()
+
+    private companion object {
+        val LOGGER: Logger = Logger.getLogger(RepositoryManager::class.java.name)
+    }
 }

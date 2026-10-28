@@ -162,7 +162,13 @@ private fun ShuraApp(viewModel: ShuraViewModel, state: ShuraUiState) {
 
     LaunchedEffect(state.repositoryMessage) {
         if (state.repositoryMessage == "repository_added") {
-            snackbarHostState.showSnackbar(context.getString(R.string.repository_added))
+            snackbarHostState.showSnackbar(
+                context.getString(
+                    R.string.repository_added,
+                    state.repositorySuccessName ?: context.getString(R.string.repositories_title),
+                    state.repositorySuccessCount ?: 0,
+                ),
+            )
         }
     }
     LaunchedEffect(state.repositoryError) {
@@ -395,21 +401,48 @@ private fun AddLibraryTitleDialog(onDismiss: () -> Unit, onSave: (String) -> Uni
 @Composable
 private fun RepositoriesScreen(viewModel: ShuraViewModel, state: ShuraUiState, padding: PaddingValues) {
     var repositoryUrl by rememberSaveable { mutableStateOf("") }
+    val validation = state.repositoryValidation?.takeIf {
+        state.repositoryValidatedInput == repositoryUrl.trim()
+    }
+    val alreadyAdded = validation?.let { candidate ->
+        state.repositories.any { it.repository.normalized == candidate.repository.normalized }
+    } == true
     Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp)) {
         OutlinedTextField(
             value = repositoryUrl,
-            onValueChange = { repositoryUrl = it },
+            onValueChange = {
+                repositoryUrl = it
+                viewModel.clearRepositoryValidation()
+            },
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
             label = { Text(stringResource(R.string.repository_url_hint)) },
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
         )
-        Button(
-            onClick = { viewModel.addRepository(repositoryUrl) },
-            enabled = repositoryUrl.isNotBlank() && !state.repositoryOperation,
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+        Text(
+            stringResource(R.string.repository_url_help),
+            modifier = Modifier.padding(vertical = 6.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(stringResource(R.string.repository_add))
+            OutlinedButton(
+                onClick = { viewModel.testRepository(repositoryUrl) },
+                enabled = repositoryUrl.isNotBlank() && state.initialized && !state.repositoryOperation,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(stringResource(R.string.repository_test))
+            }
+            Button(
+                onClick = { viewModel.addRepository(repositoryUrl) },
+                enabled = validation != null && !alreadyAdded && !state.repositoryOperation,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(stringResource(if (alreadyAdded) R.string.repository_added_already else R.string.repository_add))
+            }
         }
         Text(
             stringResource(R.string.repository_format_note),
@@ -417,6 +450,42 @@ private fun RepositoriesScreen(viewModel: ShuraViewModel, state: ShuraUiState, p
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        validation?.let { snapshot ->
+            Card(
+                Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        stringResource(R.string.repository_test_success, snapshot.storeName.orEmpty()),
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                    Text(
+                        if (snapshot.extensions.isEmpty()) {
+                            stringResource(R.string.repository_no_extensions)
+                        } else {
+                            stringResource(R.string.repository_extension_count, snapshot.extensions.size)
+                        },
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                    snapshot.indexUrl?.let {
+                        Text(stringResource(R.string.repository_final_url, it), style = MaterialTheme.typography.bodySmall)
+                    }
+                    snapshot.httpStatus?.let {
+                        Text(stringResource(R.string.repository_http_status, it), style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
+        state.repositoryError?.let {
+            Text(
+                stringResource(R.string.repository_error, it),
+                modifier = Modifier.padding(vertical = 6.dp),
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
         if (state.repositoryOperation) {
             Row(
                 Modifier.fillMaxWidth().padding(vertical = 8.dp),
@@ -470,6 +539,7 @@ private fun RepositoryCard(
 ) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(snapshot.storeName ?: stringResource(R.string.repository_unknown_name), style = MaterialTheme.typography.titleMedium)
             Text(snapshot.repository.normalized, style = MaterialTheme.typography.titleSmall)
             Text(
                 snapshot.lastUpdated?.let {
@@ -485,8 +555,18 @@ private fun RepositoryCard(
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
+            snapshot.indexUrl?.let {
+                Text(stringResource(R.string.repository_final_url, it), style = MaterialTheme.typography.bodySmall)
+            }
+            snapshot.httpStatus?.let {
+                Text(stringResource(R.string.repository_http_status, it), style = MaterialTheme.typography.bodySmall)
+            }
             Text(
-                stringResource(R.string.extensions_title) + ": ${snapshot.extensions.size}",
+                if (snapshot.extensions.isEmpty() && snapshot.lastUpdated != null && snapshot.error == null) {
+                    stringResource(R.string.repository_no_extensions)
+                } else {
+                    stringResource(R.string.repository_extension_count, snapshot.extensions.size)
+                },
                 style = MaterialTheme.typography.bodySmall,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -494,7 +574,7 @@ private fun RepositoryCard(
                     onClick = { viewModel.refreshRepository(snapshot.repository.normalized) },
                     enabled = !state.repositoryOperation,
                 ) {
-                    Text(stringResource(R.string.repository_refresh))
+                    Text(stringResource(if (snapshot.error == null) R.string.repository_refresh else R.string.repository_retry))
                 }
                 TextButton(
                     onClick = { viewModel.removeRepository(snapshot.repository.normalized) },
@@ -511,7 +591,7 @@ private fun RepositoryCard(
 private fun ExtensionsScreen(state: ShuraUiState, padding: PaddingValues) {
     var query by rememberSaveable { mutableStateOf("") }
     val gate = remember { ExtensionSafetyGate() }
-    val allExtensions = state.repositories.flatMap { it.extensions }
+    val allExtensions = state.extensionCatalog()
     val extensions = allExtensions.filter { extension ->
         query.isBlank() ||
             extension.name.contains(query, ignoreCase = true) ||
@@ -574,6 +654,17 @@ private fun ExtensionCard(extension: ExtensionDescriptor, gate: ExtensionSafetyG
                 style = MaterialTheme.typography.bodySmall,
             )
             Text(stringResource(R.string.extension_language, extension.language), style = MaterialTheme.typography.bodySmall)
+            extension.sources.forEach { source ->
+                if (source.name.isNotBlank() || source.language.isNotBlank()) {
+                    Text(
+                        stringResource(R.string.extension_source_details, source.name, source.language),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    source.homeUrl?.let {
+                        Text(stringResource(R.string.extension_source_url, it), style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
             when {
                 result.isBlocked -> Text(
                     stringResource(R.string.extension_blocked) + " · " +

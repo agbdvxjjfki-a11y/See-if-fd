@@ -5,6 +5,7 @@ import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.shura.core.reader.AutoFlipSettings
+import app.shura.core.repository.ExtensionDescriptor
 import app.shura.core.repository.FileRepositoryConfigurationStore
 import app.shura.core.repository.RepositoryCatalogSnapshot
 import app.shura.core.repository.RepositoryIndexClient
@@ -24,7 +25,10 @@ data class ShuraUiState(
     val repositoryOperation: Boolean = false,
     val repositoryError: String? = null,
     val repositoryMessage: String? = null,
-    val repositoryQuery: String = "",
+    val repositoryValidation: RepositoryCatalogSnapshot? = null,
+    val repositoryValidatedInput: String? = null,
+    val repositorySuccessName: String? = null,
+    val repositorySuccessCount: Int? = null,
     val libraryTitles: List<String> = emptyList(),
     val autoFlipEnabled: Boolean = false,
     val autoFlipDurationSeconds: Int = 5,
@@ -32,7 +36,9 @@ data class ShuraUiState(
     val darkTheme: Boolean = false,
     val language: String = "ar",
     val initialized: Boolean = false,
-)
+) {
+    fun extensionCatalog(): List<ExtensionDescriptor> = repositories.flatMap { it.extensions }
+}
 
 class ShuraViewModel(application: Application) : AndroidViewModel(application) {
     private val preferences = application.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
@@ -51,7 +57,7 @@ class ShuraViewModel(application: Application) : AndroidViewModel(application) {
                         indexSource = RepositoryIndexClient(),
                     )
                     manager = initializedManager
-                    initializedManager.repositories()
+                    initializedManager.refreshAll()
                 }
             }.onSuccess { repositories ->
                 mutableState.value = mutableState.value.copy(
@@ -67,24 +73,63 @@ class ShuraViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun setRepositoryQuery(query: String) {
-        mutableState.value = mutableState.value.copy(repositoryQuery = query)
+    fun clearRepositoryValidation() {
+        mutableState.value = mutableState.value.copy(
+            repositoryValidation = null,
+            repositoryValidatedInput = null,
+            repositoryError = null,
+        )
     }
 
-    fun addRepository(url: String) {
+    fun testRepository(url: String) {
         if (mutableState.value.repositoryOperation) return
         viewModelScope.launch {
             beginRepositoryOperation()
             val result = runCatching {
                 withContext(Dispatchers.IO) {
+                    (manager ?: error("Repository manager is unavailable")).testRepository(url)
+                }
+            }
+            result.onSuccess { snapshot ->
+                mutableState.value = mutableState.value.copy(
+                    repositoryValidation = snapshot,
+                    repositoryValidatedInput = url.trim(),
+                    repositoryError = null,
+                )
+            }.onFailure { error ->
+                mutableState.value = mutableState.value.copy(
+                    repositoryValidation = null,
+                    repositoryValidatedInput = null,
+                    repositoryError = error.message ?: error.javaClass.simpleName,
+                )
+            }
+            endRepositoryOperation()
+        }
+    }
+
+    fun addRepository(url: String) {
+        if (mutableState.value.repositoryOperation) return
+        if (mutableState.value.repositoryValidatedInput != url.trim()) {
+            mutableState.value = mutableState.value.copy(repositoryError = "اختبر رابط الفهرس قبل إضافته")
+            return
+        }
+        viewModelScope.launch {
+            beginRepositoryOperation()
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
                     val repositoryManager = manager ?: error("Repository manager is unavailable")
-                    val added = repositoryManager.addRepository(url)
-                    repositoryManager.refreshRepository(added.repository.normalized)
+                    repositoryManager.addRepository(url)
                 }
             }
             result.onSuccess { snapshot ->
                 updateRepository(snapshot)
-                mutableState.value = mutableState.value.copy(repositoryMessage = "repository_added")
+                mutableState.value = mutableState.value.copy(
+                    repositoryMessage = "repository_added",
+                    repositorySuccessName = snapshot.storeName,
+                    repositorySuccessCount = snapshot.extensions.size,
+                    repositoryValidation = null,
+                    repositoryValidatedInput = null,
+                )
             }.onFailure { error ->
                 mutableState.value = mutableState.value.copy(
                     repositoryError = error.message ?: error.javaClass.simpleName,
@@ -245,6 +290,8 @@ class ShuraViewModel(application: Application) : AndroidViewModel(application) {
             repositoryOperation = true,
             repositoryError = null,
             repositoryMessage = null,
+            repositorySuccessName = null,
+            repositorySuccessCount = null,
         )
     }
 

@@ -15,26 +15,26 @@ class RepositoryManagerTest {
     @Test
     fun persistsRepositoriesAcrossManagerInstancesAndRejectsDuplicates() {
         val store = FileRepositoryConfigurationStore(temporaryDirectory.resolve("repositories.json"))
-        val firstManager = RepositoryManager(store, RepositoryIndexSource { "[]" })
-        firstManager.addRepository("https://example.org/extensions/")
+        val firstManager = RepositoryManager(store, RepositoryIndexSource { fetched("[]", it) })
+        firstManager.addRepository("https://example.org/extensions/index.min.json")
         assertFailsWith<IllegalArgumentException> {
-            firstManager.addRepository("https://EXAMPLE.org/extensions")
+            firstManager.addRepository("https://EXAMPLE.org/extensions/index.min.json")
         }
 
-        val restoredManager = RepositoryManager(store, RepositoryIndexSource { "[]" })
+        val restoredManager = RepositoryManager(store, RepositoryIndexSource { fetched("[]", it) })
         assertEquals(
-            listOf("https://example.org/extensions"),
+            listOf("https://example.org/extensions/index.min.json"),
             restoredManager.repositories().map { it.repository.normalized },
         )
-        assertTrue(restoredManager.removeRepository("https://example.org/extensions"))
-        assertTrue(RepositoryManager(store, RepositoryIndexSource { "[]" }).repositories().isEmpty())
+        assertTrue(restoredManager.removeRepository("https://example.org/extensions/index.min.json"))
+        assertTrue(RepositoryManager(store, RepositoryIndexSource { fetched("[]", it) }).repositories().isEmpty())
     }
 
     @Test
     fun refreshSearchAndUpdateDiscoveryUseValidatedCatalogData() {
         val store = InMemoryRepositoryStore()
         var index = indexJson(versionCode = 4)
-        val manager = RepositoryManager(store, RepositoryIndexSource { index })
+        val manager = RepositoryManager(store, RepositoryIndexSource { fetched(index, it) })
         manager.addRepository("https://example.org/extensions")
 
         val refreshed = manager.refreshRepository("https://example.org/extensions/")
@@ -51,16 +51,46 @@ class RepositoryManagerTest {
     }
 
     @Test
+    fun testsBeforeSavingAndOnlyPersistsAParsedDirectIndexUrl() {
+        val store = InMemoryRepositoryStore()
+        val url = "https://RAW.githubusercontent.com/owner/extensions/repo/index.min.json"
+        val manager = RepositoryManager(
+            store,
+            RepositoryIndexSource { fetched(indexJson(versionCode = 7), it) },
+        )
+
+        val tested = manager.testRepository(url)
+        assertEquals(emptyList(), store.load())
+        assertEquals(1, tested.extensions.size)
+        assertEquals("https://raw.githubusercontent.com/owner/extensions/repo/index.min.json", tested.repository.normalized)
+        assertEquals("https://raw.githubusercontent.com/owner/extensions/repo/index.min.json", manager.addRepository(url).repository.normalized)
+        assertEquals(listOf(url), store.load())
+        assertEquals(url, RepositoryManager(store, RepositoryIndexSource { fetched("[]", it) })
+            .repositories().single().repository.inputUrl)
+    }
+
+    @Test
+    fun doesNotPersistAnIndexThatCannotBeParsed() {
+        val store = InMemoryRepositoryStore()
+        val manager = RepositoryManager(
+            store,
+            RepositoryIndexSource { fetched("not json", it) },
+        )
+
+        assertFailsWith<IllegalArgumentException> {
+            manager.addRepository("https://example.org/repo/index.json")
+        }
+        assertEquals(emptyList(), store.load())
+    }
+
+    @Test
     fun failedRefreshKeepsLastGoodCatalogAndExposesRetryableError() {
         val store = InMemoryRepositoryStore()
         var fail = false
-        val manager = RepositoryManager(
-            store,
-            RepositoryIndexSource {
-                if (fail) error("network unavailable")
-                indexJson(versionCode = 1)
-            },
-        )
+        val manager = RepositoryManager(store, RepositoryIndexSource {
+            if (fail) error("network unavailable")
+            fetched(indexJson(versionCode = 1), it)
+        })
         manager.addRepository("https://example.org/extensions")
         manager.refreshRepository("https://example.org/extensions")
 
@@ -75,6 +105,24 @@ class RepositoryManagerTest {
 
     private fun indexJson(versionCode: Int): String =
         """[{"name":"Reader","pkg":"org.example.reader","apk":"apk/reader.apk","lang":"en","version":"1.$versionCode","versionCode":$versionCode,"nsfw":0}]"""
+
+    private fun fetched(body: String, repository: RepositoryAddress): FetchedRepositoryIndex {
+        val indexUrl = repository.indexCandidates()
+            .firstOrNull { it.path.endsWith(".json") }
+            ?.toString()
+            ?: repository.indexCandidates().first().toString()
+        val diagnostic = IndexRequestDiagnostic(
+            inputUrl = repository.normalized,
+            requestedUrl = indexUrl,
+            finalUrl = indexUrl,
+            statusCode = 200,
+            contentType = "application/json",
+            redirects = emptyList(),
+            redirectStatuses = emptyList(),
+            bodyDownloaded = true,
+        )
+        return FetchedRepositoryIndex(body.toByteArray(), "application/json", diagnostic, listOf(diagnostic))
+    }
 
     private class InMemoryRepositoryStore : RepositoryConfigurationStore {
         private var urls: List<String> = emptyList()
