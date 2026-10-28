@@ -1,0 +1,341 @@
+package app.shura.core.repository
+
+import app.shura.core.repository.proto.ExtensionList
+import app.shura.core.repository.proto.Index
+import java.io.ByteArrayOutputStream
+import java.util.concurrent.TimeUnit
+import java.util.zip.GZIPOutputStream
+import javax.net.ssl.HttpsURLConnection
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
+import okio.Buffer
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import okhttp3.tls.HandshakeCertificates
+import okhttp3.tls.HeldCertificate
+import org.junit.jupiter.api.Assumptions.assumeTrue
+
+class RepositoryIndexClientTest {
+    @Test
+    fun requestsDirectJsonAndMinifiedJsonIndexUrlsWithoutAppendingAnotherSuffix() = withHttpsServer { server ->
+        val json = """[{"name":"Reader","pkg":"org.example.reader","apk":"reader.apk","lang":"en","version":"1","code":1}]"""
+        server.enqueue(jsonResponse(json))
+        server.enqueue(jsonResponse(json))
+        val client = RepositoryIndexClient()
+
+        listOf("index.json", "index.min.json").forEach { filename ->
+            val repository = RepositoryAddress.parse(serverUrl(server, "/repo/$filename"))
+            val fetched = client.fetch(repository)
+            assertEquals("/repo/$filename", server.takeRequest(1, TimeUnit.SECONDS)?.path)
+            assertEquals(200, fetched.diagnostic.statusCode)
+            assertTrue(fetched.diagnostic.bodyDownloaded)
+            assertEquals(1, RepositoryCatalogParser().parse(fetched, repository).extensions.size)
+        }
+    }
+
+    @Test
+    fun followsRedirectsAndRecordsFinalUrlAndRedirectChain() = withHttpsServer { server ->
+        server.enqueue(MockResponse().setResponseCode(302).addHeader("Location", "../storage/index.pb"))
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .addHeader("Content-Type", "application/octet-stream")
+                .setBody(Buffer().write(indexProto().toByteArray())),
+        )
+        val repository = RepositoryAddress.parse(serverUrl(server, "/repo/index.pb"))
+        val fetched = RepositoryIndexClient().fetch(repository)
+        val parsed = RepositoryCatalogParser().parse(fetched, repository)
+
+        assertEquals("/repo/index.pb", server.takeRequest(1, TimeUnit.SECONDS)?.path)
+        assertEquals("/storage/index.pb", server.takeRequest(1, TimeUnit.SECONDS)?.path)
+        assertEquals(200, fetched.diagnostic.statusCode)
+        assertEquals("/storage/index.pb", java.net.URI(fetched.diagnostic.finalUrl).path)
+        assertEquals(1, fetched.diagnostic.redirects.size)
+        assertEquals(listOf(302), fetched.diagnostic.redirectStatuses)
+        assertTrue(fetched.diagnostic.bodyDownloaded)
+        assertEquals(1, parsed.extensions.size)
+    }
+
+    @Test
+    fun retriesDirectoryCandidatesAfter404AndUsesTheFirstValidIndex() = withHttpsServer { server ->
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(404)
+                .addHeader("Content-Type", "text/plain")
+                .setBody("index not found"),
+        )
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .addHeader("Content-Type", "application/x-protobuf")
+                .setBody(Buffer().write(indexProto().toByteArray())),
+        )
+        val repository = RepositoryAddress.parse(serverUrl(server, "/repo"))
+        val fetched = RepositoryIndexClient().fetch(repository)
+
+        assertEquals("/repo/index.pb", server.takeRequest(1, TimeUnit.SECONDS)?.path)
+        assertEquals("/repo/index.min.json", server.takeRequest(1, TimeUnit.SECONDS)?.path)
+        assertEquals(2, fetched.attempts.size)
+        assertEquals(404, fetched.attempts.first().statusCode)
+        assertEquals(200, fetched.diagnostic.statusCode)
+        assertEquals("/repo/index.min.json", java.net.URI(fetched.diagnostic.finalUrl).path)
+    }
+
+    @Test
+    fun reportsReal404AndDoesNotHideTheFailedUrl() = withHttpsServer { server ->
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(404)
+                .addHeader("Content-Type", "text/plain")
+                .setBody("index not found"),
+        )
+        val repository = RepositoryAddress.parse(serverUrl(server, "/repo/index.json"))
+        val error = assertFailsWith<RepositoryIndexFetchException> {
+            RepositoryIndexClient().fetch(repository)
+        }
+
+        assertEquals(RepositoryFetchFailure.NOT_FOUND, error.failure)
+        assertEquals(404, error.diagnostics.single().statusCode)
+        assertEquals("text/plain", error.diagnostics.single().contentType)
+        assertEquals(serverUrl(server, "/repo/index.json"), error.diagnostics.single().finalUrl)
+        assertFalse(error.diagnostics.single().bodyDownloaded)
+        assertTrue(error.message.orEmpty().contains("Content-Type: text/plain"))
+    }
+
+    @Test
+    fun distinguishesConnectionFailureFromHttpFailure() {
+        val server = MockWebServer()
+        server.start()
+        val port = server.port
+        server.shutdown()
+        val repository = RepositoryAddress.parse("https://localhost:$port/repo/index.pb")
+
+        val error = assertFailsWith<RepositoryIndexFetchException> {
+            RepositoryIndexClient(connectTimeoutMillis = 500, readTimeoutMillis = 500).fetch(repository)
+        }
+
+        assertEquals(RepositoryFetchFailure.CONNECTION, error.failure)
+        assertEquals(null, error.diagnostics.single().statusCode)
+        assertFalse(error.diagnostics.single().bodyDownloaded)
+    }
+
+    @Test
+    fun rejectsMalformedJsonAfterSuccessfulDownloadAndAllowsEmptyValidCatalog() = withHttpsServer { server ->
+        server.enqueue(jsonResponse("{broken"))
+        server.enqueue(jsonResponse("[]"))
+        val repository = RepositoryAddress.parse(serverUrl(server, "/repo/index.json"))
+        val client = RepositoryIndexClient()
+        val malformed = client.fetch(repository)
+
+        assertEquals(200, malformed.diagnostic.statusCode)
+        assertTrue(malformed.diagnostic.bodyDownloaded)
+        assertFailsWith<IllegalArgumentException> {
+            RepositoryCatalogParser().parse(malformed, repository)
+        }
+        val emptyRepository = RepositoryAddress.parse(serverUrl(server, "/empty/index.json"))
+        val empty = client.fetch(emptyRepository)
+        assertTrue(RepositoryCatalogParser().parse(empty, emptyRepository).extensions.isEmpty())
+    }
+
+    @Test
+    fun decompressesRealSchemaProtobufPayload() = withHttpsServer { server ->
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .addHeader("Content-Type", "application/octet-stream")
+                .setBody(Buffer().write(gzip(indexProto().toByteArray()))),
+        )
+        val repository = RepositoryAddress.parse(serverUrl(server, "/repo/index.pb"))
+        val fetched = RepositoryIndexClient().fetch(repository)
+
+        assertEquals(1, RepositoryCatalogParser().parse(fetched, repository).extensions.size)
+        assertEquals(200, fetched.diagnostic.statusCode)
+        assertTrue(fetched.diagnostic.bodyDownloaded)
+    }
+
+    @Test
+    fun fetchesExternalExtensionListUsingTheMihonIndexField() = withHttpsServer { server ->
+        val externalList = indexProto().extensionList.toByteArray()
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .addHeader("Content-Type", "application/x-protobuf")
+                .setBody(
+                    Buffer().write(
+                        Index.newBuilder()
+                            .setName("External list store")
+                            .setExtensionListUrl(serverUrl(server, "/lists/extensions.pb"))
+                            .build()
+                            .toByteArray(),
+                    ),
+                ),
+        )
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .addHeader("Content-Type", "application/x-protobuf")
+                .setBody(Buffer().write(externalList)),
+        )
+        val repository = RepositoryAddress.parse(serverUrl(server, "/repo/index.pb"))
+        val client = RepositoryIndexClient()
+        val fetched = client.fetch(repository)
+        val parsed = RepositoryCatalogParser().parse(fetched, repository) { url ->
+            client.fetchExternalList(url, repository.inputUrl)
+        }
+
+        assertEquals("/repo/index.pb", server.takeRequest(1, TimeUnit.SECONDS)?.path)
+        assertEquals("/lists/extensions.pb", server.takeRequest(1, TimeUnit.SECONDS)?.path)
+        assertEquals("External list store", parsed.name)
+        assertEquals(1, parsed.extensions.size)
+        assertEquals(
+            "https://localhost:${server.port}/lists/reader.apk",
+            parsed.extensions.single().apkUrl,
+        )
+    }
+
+    @Test
+    fun keiyoushiPublicIndexCanBeCheckedOnDemand() {
+        assumeTrue(System.getenv("SHURA_RUN_INTEGRATION_TESTS") == "true")
+        val url = "https://github.com/keiyoushi/extensions/raw/repo/index.pb"
+        val repository = RepositoryAddress.parse(url)
+        val client = RepositoryIndexClient()
+        val networkStarted = System.nanoTime()
+        val fetched = client.fetch(repository)
+        val networkMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - networkStarted)
+
+        val parseStarted = System.nanoTime()
+        val parsed = RepositoryCatalogParser().parse(fetched, repository)
+        val parseMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - parseStarted)
+        val filterStarted = System.nanoTime()
+        val allowed = parsed.extensions.filterNot(app.shura.core.content.ContentPolicyEngine()::isBlocked)
+        val filterMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - filterStarted)
+        val saveStore = InMemoryRepositoryStore()
+        val saveManager = RepositoryManager(saveStore, RepositoryIndexSource { fetched })
+        val saveStarted = System.nanoTime()
+        val snapshot = saveManager.addRepository(url)
+        val parseFetchSaveMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - saveStarted)
+        val searchStarted = System.nanoTime()
+        val searchResult = saveManager.search(query = "comicfury")
+        val searchMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - searchStarted)
+
+        println(
+            "Keiyoushi index: input=$url, final=${snapshot.indexUrl}, " +
+                "status=${snapshot.httpStatus}, contentType=${snapshot.contentType}, " +
+                "redirects=${snapshot.redirectStatuses.size}, extensions=${snapshot.extensions.size}, " +
+                "entries=${snapshot.extensions.take(10).joinToString { "${it.name} [${it.packageName}] ${it.version}" }} " +
+                "network_ms=$networkMillis parse_ms=$parseMillis policy_filter_ms=$filterMillis " +
+                "manager_cached_fetch_parse_filter_save_ms=$parseFetchSaveMillis local_search_ms=$searchMillis",
+        )
+        val comicFury = snapshot.extensions.single {
+            it.packageName == "eu.kanade.tachiyomi.extension.all.comicfury"
+        }
+        assertEquals("Comic Fury", comicFury.name)
+        assertEquals("1.6.0", comicFury.version)
+        assertEquals(106_000L, comicFury.versionCode)
+        assertEquals(
+            "https://github.com/keiyoushi/extensions/releases/download/24bc6c2/tachiyomi-all.comicfury-v1.6.0.apk",
+            comicFury.apkUrl,
+        )
+        assertEquals(
+            "9add655a78e96c4ec7a53ef89dccb557cb5d767489fac5e785d671a5a75d4da2",
+            comicFury.apkSignerSha256,
+        )
+        println(
+            "Verified real APK candidate: name=${comicFury.name}, package=${comicFury.packageName}, " +
+                "versionName=${comicFury.version}, versionCode=${comicFury.versionCode}, " +
+                "apkUrl=${comicFury.apkUrl}, signerSha256=${comicFury.apkSignerSha256}",
+        )
+        assertEquals(200, snapshot.httpStatus)
+        assertTrue(snapshot.bodyDownloaded)
+        assertTrue(allowed.size > 1_000)
+        assertTrue(saveManager.repositories().single().extensions.isNotEmpty())
+        assertEquals(
+            "eu.kanade.tachiyomi.extension.all.comicfury",
+            searchResult.first { it.packageName == "eu.kanade.tachiyomi.extension.all.comicfury" }.packageName,
+        )
+    }
+
+    @Test
+    fun keiyoushiPublicJsonIndexCanBeCheckedOnDemand() {
+        assumeTrue(System.getenv("SHURA_RUN_INTEGRATION_TESTS") == "true")
+        val url = "https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.min.json"
+        val manager = RepositoryManager(InMemoryRepositoryStore(), RepositoryIndexClient())
+        val snapshot = manager.addRepository(url)
+
+        println(
+            "Keiyoushi JSON index: input=$url, final=${snapshot.indexUrl}, " +
+                "status=${snapshot.httpStatus}, contentType=${snapshot.contentType}, " +
+                "extensions=${snapshot.extensions.size}, " +
+                "entries=${snapshot.extensions.joinToString { "${it.name} [${it.packageName}] ${it.version}" }}",
+        )
+        assertEquals(200, snapshot.httpStatus)
+        assertTrue(snapshot.bodyDownloaded)
+        assertTrue(manager.repositories().single().extensions.isNotEmpty())
+    }
+
+    private fun indexProto(): Index =
+        Index.newBuilder()
+            .setName("Keiyoushi community")
+            .setExtensionList(
+                ExtensionList.newBuilder()
+                    .addExtensions(
+                        app.shura.core.repository.proto.Extension.newBuilder()
+                            .setName("Reader")
+                            .setPackageName("org.example.reader")
+                            .setResources(
+                                app.shura.core.repository.proto.Resources.newBuilder()
+                                    .setApkUrl("reader.apk"),
+                            )
+                            .setVersionCode(1)
+                            .setVersionName("1.0"),
+                    ),
+            )
+            .build()
+
+    private fun jsonResponse(body: String) =
+        MockResponse().setResponseCode(200).addHeader("Content-Type", "application/json").setBody(body)
+
+    private fun serverUrl(server: MockWebServer, path: String): String =
+        server.url(path).toString().replaceFirst("http://", "https://")
+
+    private fun gzip(bytes: ByteArray): ByteArray =
+        ByteArrayOutputStream().also { output ->
+            GZIPOutputStream(output).use { it.write(bytes) }
+        }.toByteArray()
+
+    private fun withHttpsServer(block: (MockWebServer) -> Unit) {
+        val certificate = HeldCertificate.Builder()
+            .addSubjectAlternativeName("localhost")
+            .build()
+        val serverCertificates = HandshakeCertificates.Builder()
+            .heldCertificate(certificate)
+            .build()
+        val clientCertificates = HandshakeCertificates.Builder()
+            .addTrustedCertificate(certificate.certificate)
+            .build()
+        val originalSocketFactory = HttpsURLConnection.getDefaultSSLSocketFactory()
+        val server = MockWebServer()
+        server.useHttps(serverCertificates.sslSocketFactory(), false)
+        HttpsURLConnection.setDefaultSSLSocketFactory(clientCertificates.sslSocketFactory())
+        try {
+            server.start()
+            block(server)
+        } finally {
+            server.shutdown()
+            HttpsURLConnection.setDefaultSSLSocketFactory(originalSocketFactory)
+        }
+    }
+
+    private class InMemoryRepositoryStore : RepositoryConfigurationStore {
+        private var urls: List<String> = emptyList()
+
+        override fun load(): List<String> = urls.toList()
+
+        override fun save(repositoryUrls: List<String>) {
+            urls = repositoryUrls.toList()
+        }
+    }
+}

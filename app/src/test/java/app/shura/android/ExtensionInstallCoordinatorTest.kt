@@ -1,0 +1,404 @@
+package app.shura.android
+
+import android.content.pm.PackageInstaller
+import app.shura.core.repository.ExtensionDescriptor
+import java.io.ByteArrayInputStream
+import java.io.File
+import java.io.InputStream
+import java.net.HttpURLConnection
+import java.net.URI
+import java.net.URL
+import java.security.MessageDigest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
+import kotlinx.coroutines.runBlocking
+import org.junit.Rule
+import org.junit.rules.TemporaryFolder
+
+class ExtensionInstallCoordinatorTest {
+    @get:Rule
+    val temporaryFolder = TemporaryFolder()
+
+    @Test
+    fun downloadsAndVerifiesPackageVersionAndOptionalTrustedHash() = runBlocking {
+        val apkBytes = byteArrayOf(1, 2, 3, 4)
+        val descriptor = extension().copy(apkSha256 = sha256(apkBytes))
+        var progress = ApkDownloadProgress(0, null)
+        val coordinator = coordinator(apkBytes, ApkArchiveMetadata(
+            packageName = descriptor.packageName,
+            versionCode = descriptor.versionCode,
+            versionName = descriptor.version,
+            isMihonExtension = true,
+            signerSha256 = setOf("trusted-signer"),
+            nsfwClassification = ApkNsfwClassification.SAFE,
+        ))
+
+        val result = coordinator.prepare(
+            extension = descriptor,
+            onProgress = { progress = it },
+        )
+
+        assertEquals(descriptor.packageName, result.archive.packageName)
+        assertEquals(descriptor.versionCode, result.archive.versionCode)
+        assertEquals(sha256(apkBytes), result.sha256)
+        assertEquals(apkBytes.size.toLong(), progress.downloadedBytes)
+        assertTrue(result.file.exists())
+    }
+
+    @Test
+    fun blocksPolicyRejectedExtensionBeforeNetworkDownload() = runBlocking {
+        var requested = false
+        val coordinator = ExtensionInstallCoordinator(
+            cacheDirectory = temporaryFolder.root,
+            downloader = HttpsApkDownloader(HttpConnectionOpener {
+                requested = true
+                FakeHttpConnection(it.toURL(), 200, byteArrayOf(1))
+            }),
+            archiveInspector = ApkArchiveInspector {
+                error("A blocked extension must not be inspected")
+            },
+        )
+
+        assertFailsWith<IllegalArgumentException> {
+            coordinator.prepare(extension(name = "Hentai Reader"), onProgress = {})
+        }
+        assertTrue(!requested)
+    }
+
+    @Test
+    fun rejectsWrongPackageVersionSignatureAndBadHash(): Unit = runBlocking {
+        val bytes = byteArrayOf(1, 2, 3)
+        val descriptor = extension().copy(apkSha256 = sha256(byteArrayOf(8)))
+
+        assertFailsWith<IllegalArgumentException> {
+            coordinator(bytes, archive(packageName = "org.other.extension"))
+                .prepare(descriptor.copy(apkSha256 = null), onProgress = {})
+        }
+        assertFailsWith<IllegalArgumentException> {
+            coordinator(bytes, archive(versionCode = 4))
+                .prepare(descriptor.copy(apkSha256 = null), onProgress = {})
+        }
+        assertFailsWith<IllegalArgumentException> {
+            coordinator(bytes, archive().copy(versionName = "1.3"))
+                .prepare(descriptor.copy(apkSha256 = null), onProgress = {})
+        }
+        assertFailsWith<IllegalArgumentException> {
+            coordinator(bytes, archive())
+                .prepare(descriptor, onProgress = {})
+        }
+        assertFailsWith<IllegalArgumentException> {
+            coordinator(bytes, archive(signer = "new-signer"))
+                .prepare(
+                    descriptor.copy(apkSha256 = null),
+                    installedSignerSha256 = setOf("old-signer"),
+                    onProgress = {},
+                )
+        }
+        assertFailsWith<IllegalArgumentException> {
+            coordinator(bytes, archive(isMihonExtension = false))
+                .prepare(descriptor.copy(apkSha256 = null), onProgress = {})
+        }
+        assertFailsWith<IllegalArgumentException> {
+            coordinator(bytes, archive().copy(nsfwClassification = ApkNsfwClassification.NSFW))
+                .prepare(descriptor.copy(apkSha256 = null), onProgress = {})
+        }
+        Unit
+    }
+
+    @Test
+    fun versionMismatchErrorIdentifiesCatalogAndActualApkValues(): Unit = runBlocking {
+        val descriptor = extension().copy(name = "Comic Fury", version = "1.6.0", versionCode = 106_000)
+        val error = assertFailsWith<IllegalArgumentException> {
+            coordinator(
+                byteArrayOf(1, 2, 3),
+                archive(versionCode = 106_001).copy(versionName = "1.6.1"),
+            ).prepare(descriptor, onProgress = {})
+        }
+
+        assertTrue(error.message.orEmpty().contains("Comic Fury"))
+        assertTrue(error.message.orEmpty().contains(descriptor.packageName))
+        assertTrue(error.message.orEmpty().contains("versionCode=106000"))
+        assertTrue(error.message.orEmpty().contains("versionCode=106001"))
+    }
+
+    @Test
+    fun rejectsAdultMissingAndInvalidApkClassificationAndDeletesTemporaryFile() = runBlocking {
+        val descriptor = extension()
+        val rejectedClassifications = listOf(
+            ApkNsfwClassification.NSFW,
+            ApkNsfwClassification.MISSING,
+            ApkNsfwClassification.INVALID,
+        )
+
+        rejectedClassifications.forEach { classification ->
+            assertFailsWith<IllegalArgumentException> {
+                coordinator(
+                    byteArrayOf(1, 2, 3),
+                    archive().copy(nsfwClassification = classification),
+                ).prepare(descriptor, onProgress = {})
+            }
+            assertEquals(0, temporaryFolder.root.listFiles().orEmpty().size)
+        }
+    }
+
+    @Test
+    fun successfulAndroidInstallVerificationRequiresKnownSafeApkClassification() {
+        val missingClassification = extensionInstallOutcome(
+            status = PackageInstaller.STATUS_SUCCESS,
+            expectedPackage = "org.example.extension",
+            expectedVersionCode = 7,
+            installed = InstalledExtensionPackage(
+                packageName = "org.example.extension",
+                versionName = "1.2",
+                versionCode = 7,
+                isMihonExtension = true,
+                signerSha256 = setOf("trusted-signer"),
+                nsfwClassification = ApkNsfwClassification.MISSING,
+            ),
+            systemMessage = null,
+        )
+
+        assertEquals(ExtensionOperationPhase.INCOMPATIBLE, missingClassification.phase)
+    }
+
+    @Test
+    fun rejectsFailedAndTruncatedDownloadsAndDeletesPartialFiles() = runBlocking {
+        val errorDownloader = HttpsApkDownloader(HttpConnectionOpener {
+            FakeHttpConnection(it.toURL(), 503, byteArrayOf())
+        })
+        val coordinator = ExtensionInstallCoordinator(
+            cacheDirectory = temporaryFolder.root,
+            downloader = errorDownloader,
+            archiveInspector = ApkArchiveInspector { error("must not inspect") },
+        )
+        assertFailsWith<java.io.IOException> {
+            coordinator.prepare(extension(), onProgress = {})
+        }
+        assertEquals(0, temporaryFolder.root.listFiles().orEmpty().size)
+
+        val truncated = HttpsApkDownloader(HttpConnectionOpener {
+            FakeHttpConnection(it.toURL(), 200, byteArrayOf(1), contentLength = 8)
+        })
+        val truncatedCoordinator = ExtensionInstallCoordinator(
+            cacheDirectory = temporaryFolder.root,
+            downloader = truncated,
+            archiveInspector = ApkArchiveInspector { error("must not inspect") },
+        )
+        assertFailsWith<IllegalArgumentException> {
+            truncatedCoordinator.prepare(extension(), onProgress = {})
+        }
+        assertEquals(0, temporaryFolder.root.listFiles().orEmpty().size)
+    }
+
+    @Test
+    fun rejectsHttpsDowngradeRedirect() = runBlocking {
+        val downloader = HttpsApkDownloader(HttpConnectionOpener {
+            FakeHttpConnection(it.toURL(), 302, byteArrayOf(), location = "http://example.org/file.apk")
+        })
+        val destination = File(temporaryFolder.root, "download.apk")
+
+        assertFailsWith<IllegalArgumentException> {
+            downloader.download("https://example.org/file.apk", destination, onProgress = {})
+        }
+        assertTrue(!destination.exists())
+    }
+
+    @Test
+    fun followsHttpsApkRedirectAndDownloadsFromTheFinalHost() = runBlocking {
+        val requests = mutableListOf<String>()
+        val apkBytes = byteArrayOf(4, 3, 2, 1)
+        val downloader = HttpsApkDownloader(HttpConnectionOpener { uri ->
+            requests += uri.toString()
+            if (uri.host == "github.example") {
+                FakeHttpConnection(uri.toURL(), 302, byteArrayOf(), location = "https://cdn.example/extension.apk")
+            } else {
+                FakeHttpConnection(uri.toURL(), 200, apkBytes)
+            }
+        })
+        val destination = File(temporaryFolder.root, "redirected.apk")
+
+        assertEquals(
+            apkBytes.size.toLong(),
+            downloader.download("https://github.example/releases/extension.apk", destination, onProgress = {}),
+        )
+
+        assertEquals(
+            listOf(
+                "https://github.example/releases/extension.apk",
+                "https://cdn.example/extension.apk",
+            ),
+            requests,
+        )
+        assertTrue(destination.readBytes().contentEquals(apkBytes))
+    }
+
+    @Test
+    fun onlyReportsInstalledAfterAndroidSuccessAndInstalledPackageVersionVerification() {
+        val androidSuccess = extensionInstallOutcome(
+            status = PackageInstaller.STATUS_SUCCESS,
+            expectedPackage = "org.example.extension",
+            expectedVersionCode = 7,
+            installed = InstalledExtensionPackage(
+                packageName = "org.example.extension",
+                versionName = "1.2",
+                versionCode = 7,
+                isMihonExtension = true,
+                signerSha256 = setOf("trusted-signer"),
+                nsfwClassification = ApkNsfwClassification.SAFE,
+            ),
+            systemMessage = null,
+        )
+        val mismatchedPackage = extensionInstallOutcome(
+            status = PackageInstaller.STATUS_SUCCESS,
+            expectedPackage = "org.example.extension",
+            expectedVersionCode = 7,
+            installed = InstalledExtensionPackage(
+                packageName = "org.other.extension",
+                versionName = "1.2",
+                versionCode = 7,
+                isMihonExtension = true,
+                signerSha256 = setOf("trusted-signer"),
+                nsfwClassification = ApkNsfwClassification.SAFE,
+            ),
+            systemMessage = null,
+        )
+        val declined = extensionInstallOutcome(
+            status = PackageInstaller.STATUS_FAILURE_ABORTED,
+            expectedPackage = "org.example.extension",
+            expectedVersionCode = 7,
+            installed = null,
+            systemMessage = null,
+        )
+
+        assertEquals(ExtensionOperationPhase.INSTALLED, androidSuccess.phase)
+        assertEquals(ExtensionOperationPhase.FAILED, mismatchedPackage.phase)
+        assertEquals(ExtensionOperationPhase.FAILED, declined.phase)
+        assertTrue(declined.message?.contains("أُلغي") == true)
+    }
+
+    @Test
+    fun detectsUpdatesOnlyForRecognizedMihonExtensionPackages() {
+        val descriptor = extension()
+        val update = extensionOperationForInstalledPackage(
+            descriptor,
+            InstalledExtensionPackage(
+                packageName = descriptor.packageName,
+                versionName = "1.1",
+                versionCode = descriptor.versionCode - 1,
+                isMihonExtension = true,
+                signerSha256 = setOf("trusted-signer"),
+                nsfwClassification = ApkNsfwClassification.SAFE,
+            ),
+        )
+        val incompatible = extensionOperationForInstalledPackage(
+            descriptor,
+            InstalledExtensionPackage(
+                packageName = descriptor.packageName,
+                versionName = "1.1",
+                versionCode = descriptor.versionCode - 1,
+                isMihonExtension = false,
+                signerSha256 = emptySet(),
+                nsfwClassification = ApkNsfwClassification.SAFE,
+            ),
+        )
+        val adult = extensionOperationForInstalledPackage(
+            descriptor,
+            InstalledExtensionPackage(
+                packageName = descriptor.packageName,
+                versionName = descriptor.version,
+                versionCode = descriptor.versionCode,
+                isMihonExtension = true,
+                signerSha256 = setOf("trusted-signer"),
+                nsfwClassification = ApkNsfwClassification.NSFW,
+            ),
+        )
+        val wrongPackage = extensionOperationForInstalledPackage(
+            descriptor,
+            InstalledExtensionPackage(
+                packageName = "org.example.other",
+                versionName = descriptor.version,
+                versionCode = descriptor.versionCode,
+                isMihonExtension = true,
+                signerSha256 = setOf("trusted-signer"),
+                nsfwClassification = ApkNsfwClassification.SAFE,
+            ),
+        )
+        val newerInstalled = extensionOperationForInstalledPackage(
+            descriptor,
+            InstalledExtensionPackage(
+                packageName = descriptor.packageName,
+                versionName = "1.3",
+                versionCode = descriptor.versionCode + 1,
+                isMihonExtension = true,
+                signerSha256 = setOf("trusted-signer"),
+                nsfwClassification = ApkNsfwClassification.SAFE,
+            ),
+        )
+
+        assertEquals(ExtensionOperationPhase.UPDATE_AVAILABLE, update.phase)
+        assertEquals(ExtensionOperationPhase.INCOMPATIBLE, incompatible.phase)
+        assertEquals(ExtensionOperationPhase.INCOMPATIBLE, wrongPackage.phase)
+        assertEquals(ExtensionOperationPhase.INCOMPATIBLE, adult.phase)
+        assertEquals(ExtensionOperationPhase.INSTALLED, newerInstalled.phase)
+    }
+
+    private fun coordinator(
+        body: ByteArray,
+        metadata: ApkArchiveMetadata = archive(),
+    ) = ExtensionInstallCoordinator(
+        cacheDirectory = temporaryFolder.root,
+        downloader = HttpsApkDownloader(HttpConnectionOpener {
+            FakeHttpConnection(it.toURL(), 200, body)
+        }),
+        archiveInspector = ApkArchiveInspector { metadata },
+    )
+
+    private fun archive(
+        packageName: String = "org.example.extension",
+        versionCode: Long = 7,
+        signer: String = "trusted-signer",
+        isMihonExtension: Boolean = true,
+    ) = ApkArchiveMetadata(
+        packageName = packageName,
+        versionCode = versionCode,
+        versionName = "1.2",
+        isMihonExtension = isMihonExtension,
+        signerSha256 = setOf(signer),
+        nsfwClassification = ApkNsfwClassification.SAFE,
+    )
+
+    private fun extension(name: String = "Safe Reader") = ExtensionDescriptor(
+        name = name,
+        packageName = "org.example.extension",
+        apkPath = "extension.apk",
+        language = "en",
+        version = "1.2",
+        versionCode = 7,
+        repositoryUrl = "https://example.org/repository",
+        adultFlag = 0,
+        apkUrl = "https://example.org/repository/extension.apk",
+    )
+
+    private fun sha256(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(bytes)
+            .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+
+    private class FakeHttpConnection(
+        url: URL,
+        private val status: Int,
+        private val body: ByteArray,
+        private val contentLength: Long = body.size.toLong(),
+        private val location: String? = null,
+    ) : HttpURLConnection(url) {
+        override fun connect() = Unit
+        override fun disconnect() = Unit
+        override fun usingProxy(): Boolean = false
+        override fun getResponseCode(): Int = status
+        override fun getContentLengthLong(): Long = contentLength
+        override fun getHeaderField(name: String?): String? =
+            if (name.equals("Location", ignoreCase = true)) location else null
+        override fun getInputStream(): InputStream = ByteArrayInputStream(body)
+    }
+}

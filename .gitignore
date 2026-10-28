@@ -1,2 +1,8 @@
 # Google App Engine generated folder
 appengine-generated/
+
+# Gradle and local Android build output
+.gradle/
+.kotlin/
+**/build/
+local.properties
