@@ -8,6 +8,9 @@ import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.shura.core.content.ContentPolicyEngine
+import app.shura.core.manga.MangaDexClient
+import app.shura.core.manga.OnlineChapter
+import app.shura.core.manga.OnlineManga
 import app.shura.core.reader.AutoFlipSettings
 import app.shura.core.repository.ExtensionDescriptor
 import app.shura.core.repository.FileRepositoryConfigurationStore
@@ -42,6 +45,16 @@ data class ShuraUiState(
     val repositorySuccessCount: Int? = null,
     val libraryTitles: List<String> = emptyList(),
     val favoriteTitles: Set<String> = emptySet(),
+    val onlineLibrary: List<SavedOnlineManga> = emptyList(),
+    val onlineReadingProgress: Map<String, OnlineReadingProgress> = emptyMap(),
+    val mangaSearchResults: List<OnlineManga> = emptyList(),
+    val selectedOnlineManga: OnlineManga? = null,
+    val onlineMangaChapters: List<OnlineChapter> = emptyList(),
+    val activeOnlineChapter: OnlineChapter? = null,
+    val onlineChapterPages: List<String> = emptyList(),
+    val mangaSourceLoading: Boolean = false,
+    val mangaChapterLoading: Boolean = false,
+    val mangaSourceError: String? = null,
     val autoFlipEnabled: Boolean = false,
     val autoFlipDurationSeconds: Int = 5,
     val pauseAutoFlipOnTouch: Boolean = false,
@@ -142,6 +155,8 @@ class ShuraViewModel(application: Application) : AndroidViewModel(application) {
         archiveInspector = packageAccess::inspectArchive,
     )
     private val contentPolicy = ContentPolicyEngine()
+    private val mangaDexClient = MangaDexClient()
+    private var mangaSourceJob: Job? = null
     private val installPreferences = application.getSharedPreferences(
         AndroidExtensionPackages.INSTALL_RESULTS_PREFERENCES,
         Context.MODE_PRIVATE,
@@ -150,6 +165,119 @@ class ShuraViewModel(application: Application) : AndroidViewModel(application) {
     private val installJobs = mutableMapOf<String, Job>()
     val state: StateFlow<ShuraUiState> = mutableState.asStateFlow()
     private var manager: RepositoryManager? = null
+
+    fun searchOnlineManga(query: String, language: String) {
+        mangaSourceJob?.cancel()
+        val normalizedQuery = query.trim()
+        if (normalizedQuery.length < MIN_MANGA_QUERY_LENGTH) {
+            mutableState.value = mutableState.value.copy(
+                mangaSearchResults = emptyList(),
+                mangaSourceLoading = false,
+                mangaSourceError = null,
+            )
+            return
+        }
+        mangaSourceJob = viewModelScope.launch {
+            mutableState.value = mutableState.value.copy(
+                mangaSourceLoading = true,
+                mangaSourceError = null,
+            )
+            try {
+                val results = withContext(Dispatchers.IO) {
+                    mangaDexClient.search(normalizedQuery, language)
+                }
+                mutableState.value = mutableState.value.copy(
+                    mangaSearchResults = results,
+                    mangaSourceLoading = false,
+                )
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                mutableState.value = mutableState.value.copy(
+                    mangaSourceLoading = false,
+                    mangaSourceError = error.message ?: error.javaClass.simpleName,
+                )
+            }
+        }
+    }
+
+    fun openOnlineManga(manga: OnlineManga, language: String) {
+        mangaSourceJob?.cancel()
+        mangaSourceJob = viewModelScope.launch {
+            mutableState.value = mutableState.value.copy(
+                selectedOnlineManga = manga,
+                onlineMangaChapters = emptyList(),
+                mangaSourceLoading = true,
+                mangaSourceError = null,
+            )
+            try {
+                val (details, chapters) = withContext(Dispatchers.IO) {
+                    mangaDexClient.getManga(manga.id, language) to
+                        mangaDexClient.getChapters(manga.id, language)
+                }
+                mutableState.value = mutableState.value.copy(
+                    selectedOnlineManga = details,
+                    onlineMangaChapters = chapters,
+                    mangaSourceLoading = false,
+                )
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                mutableState.value = mutableState.value.copy(
+                    mangaSourceLoading = false,
+                    mangaSourceError = error.message ?: error.javaClass.simpleName,
+                )
+            }
+        }
+    }
+
+    fun closeOnlineMangaDetails() {
+        mangaSourceJob?.cancel()
+        mutableState.value = mutableState.value.copy(
+            selectedOnlineManga = null,
+            onlineMangaChapters = emptyList(),
+            mangaSourceLoading = false,
+            mangaSourceError = null,
+        )
+    }
+
+    fun openOnlineChapter(chapter: OnlineChapter, dataSaver: Boolean) {
+        mangaSourceJob?.cancel()
+        mangaSourceJob = viewModelScope.launch {
+            mutableState.value = mutableState.value.copy(
+                activeOnlineChapter = chapter,
+                onlineChapterPages = emptyList(),
+                mangaChapterLoading = true,
+                mangaSourceError = null,
+            )
+            try {
+                val pages = withContext(Dispatchers.IO) {
+                    mangaDexClient.getChapterPageUrls(chapter.id, dataSaver)
+                }
+                mutableState.value = mutableState.value.copy(
+                    onlineChapterPages = pages,
+                    mangaChapterLoading = false,
+                )
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                mutableState.value = mutableState.value.copy(
+                    mangaChapterLoading = false,
+                    mangaSourceError = error.message ?: error.javaClass.simpleName,
+                )
+            }
+        }
+    }
+
+    fun closeOnlineChapter() {
+        mangaSourceJob?.cancel()
+        mutableState.value = mutableState.value.copy(
+            activeOnlineChapter = null,
+            onlineChapterPages = emptyList(),
+            mangaChapterLoading = false,
+            mangaSourceError = null,
+        )
+    }
 
     init {
         viewModelScope.launch {
@@ -356,6 +484,43 @@ class ShuraViewModel(application: Application) : AndroidViewModel(application) {
                 preferences.edit().putString(LIBRARY_KEY, JSONArray(updated).toString()).apply()
             }
             mutableState.value = mutableState.value.copy(libraryTitles = updated)
+        }
+    }
+
+    fun addOnlineMangaToLibrary(manga: OnlineManga) {
+        val entries = mutableState.value.onlineLibrary
+        if (entries.any { it.id == manga.id }) return
+        val updated = entries + SavedOnlineManga(manga.id, manga.title)
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                preferences.edit().putString(ONLINE_LIBRARY_KEY, encodeOnlineLibrary(updated)).apply()
+            }
+            mutableState.value = mutableState.value.copy(onlineLibrary = updated)
+        }
+    }
+
+    fun removeOnlineMangaFromLibrary(mangaId: String) {
+        val updated = mutableState.value.onlineLibrary.filterNot { it.id == mangaId }
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                preferences.edit().putString(ONLINE_LIBRARY_KEY, encodeOnlineLibrary(updated)).apply()
+            }
+            mutableState.value = mutableState.value.copy(onlineLibrary = updated)
+        }
+    }
+
+    fun saveOnlineReadingProgress(chapter: OnlineChapter, pageIndex: Int) {
+        if (pageIndex < 0) return
+        val progress = OnlineReadingProgress(chapter.mangaId, chapter.id, pageIndex)
+        if (mutableState.value.onlineReadingProgress[chapter.mangaId] == progress) return
+        val updated = mutableState.value.onlineReadingProgress + (chapter.mangaId to progress)
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                preferences.edit()
+                    .putString(ONLINE_READING_PROGRESS_KEY, encodeOnlineReadingProgress(updated))
+                    .apply()
+            }
+            mutableState.value = mutableState.value.copy(onlineReadingProgress = updated)
         }
     }
 
@@ -727,23 +892,29 @@ class ShuraViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun clearTemporaryApkFiles() {
-        installJobs.values.toList().forEach(Job::cancel)
-        installJobs.clear()
-        preparedApks.values.toList().forEach { it.file.delete() }
-        preparedApks.clear()
+    fun clearTemporaryFiles() {
+        installJobs.keys.toList().forEach(::cancelExtensionInstall)
         viewModelScope.launch {
-            val result = runCatching {
-                withContext(Dispatchers.IO) {
-                    getApplication<Application>().cacheDir.listFiles().orEmpty()
-                        .filter { it.isFile && it.name.startsWith("shura-extension-") && it.extension == "apk" }
+            val result = try {
+                Result.success(withContext(Dispatchers.IO) {
+                    val files = getApplication<Application>().cacheDir.listFiles()
+                        ?: throw IllegalStateException("Unable to list Shura cache files")
+                    files.filter {
+                        it.isFile &&
+                            ((it.name.startsWith("shura-extension-") && it.extension == "apk") ||
+                                (it.name.startsWith("shura-page-") && it.extension == "image"))
+                    }
                         .onEach { file ->
                             if (!file.delete() && file.exists()) {
-                                throw IllegalStateException("تعذر حذف ملف APK مؤقت: ${file.name}")
+                                throw IllegalStateException("Unable to delete Shura temporary file: ${file.name}")
                             }
                         }
                         .size
-                }
+                })
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                Result.failure(error)
             }
             mutableState.value = mutableState.value.copy(
                 maintenanceMessage = result.fold(
@@ -782,9 +953,15 @@ class ShuraViewModel(application: Application) : AndroidViewModel(application) {
             val array = JSONArray(preferences.getString(FAVORITES_KEY, "[]"))
             List(array.length()) { index -> array.getString(index) }.toSet()
         }.getOrElse { emptySet() }
+        val onlineLibrary = decodeOnlineLibrary(preferences.getString(ONLINE_LIBRARY_KEY, "[]"))
+        val readingProgress = decodeOnlineReadingProgress(
+            preferences.getString(ONLINE_READING_PROGRESS_KEY, "[]"),
+        )
         return ShuraUiState(
             libraryTitles = library,
             favoriteTitles = favorites.intersect(library.toSet()),
+            onlineLibrary = onlineLibrary,
+            onlineReadingProgress = readingProgress,
             autoFlipEnabled = preferences.getBoolean(AUTO_FLIP_ENABLED_KEY, false),
             autoFlipDurationSeconds = preferences.getInt(AUTO_FLIP_DURATION_KEY, 5).coerceIn(1, 30),
             pauseAutoFlipOnTouch = preferences.getBoolean(PAUSE_ON_TOUCH_KEY, false),
@@ -890,6 +1067,8 @@ class ShuraViewModel(application: Application) : AndroidViewModel(application) {
         const val REPOSITORIES_FILE = "repositories.json"
         const val LIBRARY_KEY = "library_titles"
         const val FAVORITES_KEY = "favorite_titles"
+        const val ONLINE_LIBRARY_KEY = "online_manga_library"
+        const val ONLINE_READING_PROGRESS_KEY = "online_manga_reading_progress"
         const val AUTO_FLIP_ENABLED_KEY = "auto_flip_enabled"
         const val AUTO_FLIP_DURATION_KEY = "auto_flip_duration_seconds"
         const val PAUSE_ON_TOUCH_KEY = "pause_auto_flip_on_touch"
@@ -901,5 +1080,6 @@ class ShuraViewModel(application: Application) : AndroidViewModel(application) {
         const val DARK_THEME_KEY = "dark_theme"
         const val THEME_MODE_KEY = "theme_mode"
         const val LANGUAGE_KEY = "language"
+        const val MIN_MANGA_QUERY_LENGTH = 2
     }
 }

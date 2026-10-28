@@ -415,8 +415,18 @@ private fun ShuraApp(
                 padding = padding,
                 onNavigate = { destination = it },
             )
-            Destination.LIBRARY -> LibraryScreen(viewModel, state, padding)
-            Destination.EXPLORE -> ExploreScreen(padding) { destination = it }
+            Destination.LIBRARY -> LibraryScreen(
+                viewModel,
+                state,
+                padding,
+                onOpenOnlineManga = { destination = Destination.EXPLORE },
+            )
+            Destination.EXPLORE -> ExploreScreen(
+                viewModel,
+                state,
+                padding,
+                onOpenReader = { destination = Destination.READER },
+            )
             Destination.REPOSITORIES -> RepositoriesScreen(viewModel, state, padding)
             Destination.EXTENSIONS -> ExtensionsScreen(
                 viewModel,
@@ -511,13 +521,13 @@ private fun HomeScreen(
             HomeCard(
                 title = stringResource(R.string.home_library_title),
                 body = stringResource(R.string.home_library_body),
-                count = state.libraryTitles.size.toString(),
+                count = (state.libraryTitles.size + state.onlineLibrary.size).toString(),
                 onClick = { onNavigate(Destination.LIBRARY) },
                 modifier = Modifier.weight(1f),
             )
             HomeCard(
                 title = stringResource(R.string.nav_explore),
-                body = stringResource(R.string.explore_unavailable_body),
+                body = stringResource(R.string.explore_home_body),
                 count = null,
                 onClick = { onNavigate(Destination.EXPLORE) },
                 modifier = Modifier.weight(1f),
@@ -548,53 +558,197 @@ private fun HomeScreen(
 
 @Composable
 private fun ExploreScreen(
+    viewModel: ShuraViewModel,
+    state: ShuraUiState,
     padding: PaddingValues,
-    onNavigate: (Destination) -> Unit,
+    onOpenReader: () -> Unit,
 ) {
+    var query by rememberSaveable { mutableStateOf("") }
+    LaunchedEffect(query, state.language) {
+        delay(350)
+        viewModel.searchOnlineManga(query, state.language)
+    }
     Column(
-        Modifier.fillMaxSize().padding(padding).padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Card(
-            modifier = Modifier.fillMaxWidth().weight(1f),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-        ) {
-            Column(
-                Modifier.fillMaxWidth().padding(24.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-                horizontalAlignment = Alignment.Start,
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            label = { Text(stringResource(R.string.explore_search_hint)) },
+            singleLine = true,
+        )
+        Text(
+            stringResource(R.string.explore_source_credit),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (state.selectedOnlineManga != null) {
+            TextButton(onClick = viewModel::closeOnlineMangaDetails) {
+                Text(stringResource(R.string.explore_back_to_results))
+            }
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(bottom = 16.dp),
             ) {
-                Box(
-                    Modifier.size(52.dp).clip(RoundedCornerShape(18.dp))
-                        .background(MaterialTheme.colorScheme.secondaryContainer),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Search,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                    )
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(state.selectedOnlineManga.title, style = MaterialTheme.typography.headlineSmall)
+                        if (state.selectedOnlineManga.description.isNotBlank()) {
+                            Text(
+                                state.selectedOnlineManga.description,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text(
+                            stringResource(R.string.explore_chapters_title),
+                            style = MaterialTheme.typography.titleLarge,
+                        )
+                        val isInLibrary = state.onlineLibrary.any {
+                            it.id == state.selectedOnlineManga.id
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                if (isInLibrary) {
+                                    viewModel.removeOnlineMangaFromLibrary(state.selectedOnlineManga.id)
+                                } else {
+                                    viewModel.addOnlineMangaToLibrary(state.selectedOnlineManga)
+                                }
+                            },
+                        ) {
+                            Text(
+                                stringResource(
+                                    if (isInLibrary) R.string.library_remove
+                                    else R.string.library_save_online,
+                                ),
+                            )
+                        }
+                        state.onlineReadingProgress[state.selectedOnlineManga.id]?.let { progress ->
+                            val resumeChapter = state.onlineMangaChapters.firstOrNull {
+                                it.id == progress.chapterId
+                            }
+                            if (resumeChapter != null) {
+                                Button(
+                                    onClick = {
+                                        viewModel.openOnlineChapter(resumeChapter, state.dataSaver)
+                                        onOpenReader()
+                                    },
+                                ) {
+                                    Text(
+                                        stringResource(
+                                            R.string.reader_resume_progress,
+                                            resumeChapter.chapter ?: stringResource(R.string.value_unknown),
+                                            progress.pageIndex + 1,
+                                        ),
+                                    )
+                                }
+                            } else {
+                                Text(
+                                    stringResource(R.string.reader_progress_unavailable),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        if (state.onlineMangaChapters.isEmpty() && !state.mangaSourceLoading) {
+                            Text(
+                                stringResource(R.string.explore_no_chapters),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                 }
-                Text(
-                    stringResource(R.string.explore_unavailable_title),
-                    style = MaterialTheme.typography.headlineSmall,
-                )
-                Text(
-                    stringResource(R.string.explore_unavailable_body),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodyLarge,
-                )
-                Button(
-                    onClick = { onNavigate(Destination.EXTENSIONS) },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(stringResource(R.string.explore_browse_extensions))
+                if (state.mangaSourceLoading) {
+                    item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
                 }
-                OutlinedButton(
-                    onClick = { onNavigate(Destination.READER) },
-                    modifier = Modifier.fillMaxWidth(),
+                state.mangaSourceError?.let { error ->
+                    item { Text(error, color = MaterialTheme.colorScheme.error) }
+                }
+                items(state.onlineMangaChapters, key = { it.id }) { chapter ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    stringResource(
+                                        R.string.explore_chapter_label,
+                                        chapter.chapter ?: stringResource(R.string.value_unknown),
+                                        chapter.title,
+                                    ),
+                                    style = MaterialTheme.typography.titleMedium,
+                                )
+                                Text(
+                                    stringResource(
+                                        R.string.explore_scanlation_credit,
+                                        chapter.scanlationGroup ?: stringResource(R.string.explore_unknown_group),
+                                    ),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            TextButton(
+                                onClick = {
+                                    viewModel.openOnlineChapter(chapter, state.dataSaver)
+                                    onOpenReader()
+                                },
+                            ) {
+                                Text(stringResource(R.string.action_open))
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            if (state.mangaSourceLoading) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
+            state.mangaSourceError?.let { error ->
+                Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+            if (state.mangaSearchResults.isEmpty() && query.length >= 2 && !state.mangaSourceLoading) {
+                EmptyState(
+                    title = stringResource(
+                        if (state.mangaSourceError == null) R.string.explore_no_results
+                        else R.string.explore_search_failed,
+                    ),
+                    body = "",
+                    modifier = Modifier.weight(1f),
+                )
+            } else if (state.mangaSearchResults.isEmpty()) {
+                EmptyState(
+                    title = stringResource(R.string.explore_search_prompt),
+                    body = stringResource(R.string.explore_source_limit),
+                    modifier = Modifier.weight(1f),
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(bottom = 16.dp),
                 ) {
-                    Text(stringResource(R.string.explore_open_reader))
+                    items(state.mangaSearchResults, key = { it.id }) { manga ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = { viewModel.openOnlineManga(manga, state.language) },
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                        ) {
+                            Text(
+                                manga.title,
+                                Modifier.fillMaxWidth().padding(16.dp),
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -631,12 +785,21 @@ private fun HomeCard(
 }
 
 @Composable
-private fun LibraryScreen(viewModel: ShuraViewModel, state: ShuraUiState, padding: PaddingValues) {
+private fun LibraryScreen(
+    viewModel: ShuraViewModel,
+    state: ShuraUiState,
+    padding: PaddingValues,
+    onOpenOnlineManga: () -> Unit,
+) {
     var showAddDialog by rememberSaveable { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
     var favoritesOnly by rememberSaveable { mutableStateOf(false) }
     val visibleTitles = remember(state.libraryTitles, state.favoriteTitles, query, favoritesOnly) {
         filterLibraryTitles(state.libraryTitles, state.favoriteTitles, query, favoritesOnly)
+    }
+    val visibleOnlineManga = remember(state.onlineLibrary, query, favoritesOnly) {
+        state.onlineLibrary
+            .filter { !favoritesOnly && (query.isBlank() || it.title.contains(query.trim(), ignoreCase = true)) }
     }
     Column(
         modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp),
@@ -649,7 +812,7 @@ private fun LibraryScreen(viewModel: ShuraViewModel, state: ShuraUiState, paddin
             Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(stringResource(R.string.library_title), style = MaterialTheme.typography.titleLarge)
                 Text(
-                    stringResource(R.string.library_count, state.libraryTitles.size),
+                    stringResource(R.string.library_count, state.libraryTitles.size + state.onlineLibrary.size),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -670,13 +833,13 @@ private fun LibraryScreen(viewModel: ShuraViewModel, state: ShuraUiState, paddin
             onClick = { favoritesOnly = !favoritesOnly },
             label = { Text(stringResource(R.string.library_favorites_filter)) },
         )
-        if (state.libraryTitles.isEmpty()) {
+        if (state.libraryTitles.isEmpty() && state.onlineLibrary.isEmpty()) {
             EmptyState(
                 title = stringResource(R.string.library_empty_title),
                 body = stringResource(R.string.library_empty_body),
                 modifier = Modifier.weight(1f),
             )
-        } else if (visibleTitles.isEmpty()) {
+        } else if (visibleTitles.isEmpty() && visibleOnlineManga.isEmpty()) {
             EmptyState(
                 title = stringResource(R.string.library_no_matches),
                 body = stringResource(R.string.library_search_help),
@@ -688,6 +851,42 @@ private fun LibraryScreen(viewModel: ShuraViewModel, state: ShuraUiState, paddin
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 contentPadding = PaddingValues(bottom = 16.dp),
             ) {
+                items(visibleOnlineManga, key = { "mangadex:${it.id}" }) { manga ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            viewModel.openOnlineManga(
+                                app.shura.core.manga.OnlineManga(
+                                    id = manga.id,
+                                    title = manga.title,
+                                    description = "",
+                                    contentRating = "safe",
+                                ),
+                                state.language,
+                            )
+                            onOpenOnlineManga()
+                        },
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(manga.title, style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    stringResource(R.string.library_source_mangadex),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            TextButton(onClick = { viewModel.removeOnlineMangaFromLibrary(manga.id) }) {
+                                Text(stringResource(R.string.library_remove))
+                            }
+                        }
+                    }
+                }
                 items(visibleTitles, key = { it }) { title ->
                     Card(
                         Modifier.fillMaxWidth(),
@@ -1540,6 +1739,7 @@ private fun SettingsScreen(
     onNavigate: (Destination) -> Unit,
 ) {
     var customDuration by rememberSaveable { mutableStateOf(state.autoFlipDurationSeconds.toString()) }
+    var showCleanupConfirmation by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(state.autoFlipDurationSeconds) {
         customDuration = state.autoFlipDurationSeconds.toString()
     }
@@ -1700,7 +1900,7 @@ private fun SettingsScreen(
             )
             Text(stringResource(R.string.settings_storage_note), color = MaterialTheme.colorScheme.onSurfaceVariant)
             OutlinedButton(
-                onClick = viewModel::clearTemporaryApkFiles,
+                onClick = { showCleanupConfirmation = true },
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(stringResource(R.string.settings_clear_temporary))
@@ -1735,6 +1935,28 @@ private fun SettingsScreen(
             Text(stringResource(R.string.settings_about_package, context.packageName))
             Text(stringResource(R.string.settings_about_android, Build.VERSION.SDK_INT, Build.VERSION.RELEASE))
         }
+    }
+    if (showCleanupConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showCleanupConfirmation = false },
+            title = { Text(stringResource(R.string.settings_cleanup_confirm_title)) },
+            text = { Text(stringResource(R.string.settings_cleanup_confirm_body)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showCleanupConfirmation = false
+                        viewModel.clearTemporaryFiles()
+                    },
+                ) {
+                    Text(stringResource(R.string.settings_clear_temporary))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCleanupConfirmation = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
     }
 }
 
@@ -1807,21 +2029,65 @@ private fun ReaderScreen(viewModel: ShuraViewModel, state: ShuraUiState, padding
         Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        state.activeOnlineChapter?.let { chapter ->
+            Text(
+                stringResource(
+                    R.string.reader_chapter_source_credit,
+                    chapter.scanlationGroup ?: stringResource(R.string.explore_unknown_group),
+                ),
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         Button(
-            onClick = { launcher.launch(arrayOf("image/*")) },
+            onClick = {
+                viewModel.closeOnlineChapter()
+                launcher.launch(arrayOf("image/*"))
+            },
             modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
         ) {
             Text(stringResource(R.string.reader_open_images))
         }
-        if (imageUris.value.isEmpty()) {
+        val pages = if (state.activeOnlineChapter != null) {
+            state.onlineChapterPages.map(Uri::parse)
+        } else {
+            imageUris.value
+        }
+        val activeChapter = state.activeOnlineChapter
+        val initialPage = activeChapter?.let { chapter ->
+            state.onlineReadingProgress[chapter.mangaId]
+                ?.takeIf { it.chapterId == chapter.id }
+                ?.pageIndex
+        } ?: 0
+        when {
+            state.mangaChapterLoading -> {
+                Column(
+                    Modifier.weight(1f).fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    CircularProgressIndicator()
+                    Text(stringResource(R.string.reader_chapter_loading))
+                }
+            }
+            state.mangaSourceError != null && state.activeOnlineChapter != null -> {
+                EmptyState(
+                    title = stringResource(R.string.explore_search_failed),
+                    body = state.mangaSourceError,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            pages.isEmpty() -> {
             EmptyState(
                 title = stringResource(R.string.reader_empty_title),
                 body = stringResource(R.string.reader_empty_body),
                 modifier = Modifier.weight(1f),
             )
-        } else {
+            }
+            else -> {
             ImagePager(
-                uris = imageUris.value,
+                uris = pages,
                 autoFlipEnabled = state.autoFlipEnabled,
                 autoFlipDurationSeconds = state.autoFlipDurationSeconds,
                 pauseOnTouch = state.pauseAutoFlipOnTouch,
@@ -1831,8 +2097,13 @@ private fun ReaderScreen(viewModel: ShuraViewModel, state: ShuraUiState, padding
                 showControls = state.showReaderControls,
                 onAutoFlipToggle = { viewModel.setAutoFlipEnabled(!state.autoFlipEnabled) },
                 onAutoFlipFinished = { viewModel.setAutoFlipEnabled(false) },
+                initialPage = initialPage,
+                onPageChanged = { pageIndex ->
+                    activeChapter?.let { viewModel.saveOnlineReadingProgress(it, pageIndex) }
+                },
                 modifier = Modifier.weight(1f),
             )
+            }
         }
         Text(
             stringResource(R.string.reader_translation_note),
@@ -1855,13 +2126,19 @@ private fun ImagePager(
     showControls: Boolean,
     onAutoFlipToggle: () -> Unit,
     onAutoFlipFinished: () -> Unit,
+    initialPage: Int = 0,
+    onPageChanged: (Int) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    val pagerState = rememberPagerState(pageCount = { uris.size })
+    val pagerState = rememberPagerState(
+        initialPage = initialPage.coerceIn(0, uris.lastIndex),
+        pageCount = { uris.size },
+    )
     val currentPage = remember { AtomicInteger(0) }
     val readyPages = remember { ConcurrentHashMap.newKeySet<Int>() }
     val controllerReference = remember { java.util.concurrent.atomic.AtomicReference<AutoFlipController?>(null) }
     val scope = rememberCoroutineScope()
+    val latestOnPageChanged by androidx.compose.runtime.rememberUpdatedState(onPageChanged)
     var controllerError by remember { mutableStateOf<String?>(null) }
     var pausedByTouch by remember(uris) { mutableStateOf(false) }
 
@@ -1872,10 +2149,13 @@ private fun ImagePager(
     LaunchedEffect(uris) {
         readyPages.clear()
         currentPage.set(0)
-        pagerState.scrollToPage(0)
+        pagerState.scrollToPage(initialPage.coerceIn(0, uris.lastIndex))
     }
     LaunchedEffect(pagerState) {
-        snapshotFlow { pagerState.currentPage }.collect(currentPage::set)
+        snapshotFlow { pagerState.currentPage }.collect { page ->
+            currentPage.set(page)
+            latestOnPageChanged(page)
+        }
     }
     DisposableEffect(
         uris,
@@ -2092,6 +2372,9 @@ private fun decodeForDisplay(
     uri: Uri,
     reduceImageMemory: Boolean,
 ): Bitmap {
+    if (uri.scheme.equals("https", ignoreCase = true)) {
+        return decodeRemoteMangaPage(context, uri, reduceImageMemory)
+    }
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
         ?: error("Unable to read image")
@@ -2101,6 +2384,84 @@ private fun decodeForDisplay(
     return context.contentResolver.openInputStream(uri)?.use {
         BitmapFactory.decodeStream(it, null, options)
     } ?: error("Unable to decode image")
+}
+
+private fun decodeRemoteMangaPage(
+    context: android.content.Context,
+    uri: Uri,
+    reduceImageMemory: Boolean,
+): Bitmap {
+    val temporaryPage = java.io.File.createTempFile("shura-page-", ".image", context.cacheDir)
+    try {
+        val connection = openMangaPage(uri.toString())
+        try {
+            require(connection.contentLengthLong <= MAX_MANGA_PAGE_BYTES) {
+                "MangaDex page exceeds the download size limit"
+            }
+            connection.inputStream.use { input ->
+                temporaryPage.outputStream().use { output ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    var totalBytes = 0L
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        totalBytes += count
+                        require(totalBytes <= MAX_MANGA_PAGE_BYTES) {
+                            "MangaDex page exceeds the download size limit"
+                        }
+                        output.write(buffer, 0, count)
+                    }
+                }
+            }
+        } finally {
+            connection.disconnect()
+        }
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(temporaryPage.absolutePath, bounds)
+        require(bounds.outWidth > 0 && bounds.outHeight > 0) { "Invalid MangaDex page image" }
+        val sampleSize = readerImageSampleSize(bounds.outWidth, bounds.outHeight, reduceImageMemory)
+        return BitmapFactory.decodeFile(
+            temporaryPage.absolutePath,
+            BitmapFactory.Options().apply { inSampleSize = sampleSize },
+        ) ?: error("Unable to decode MangaDex page image")
+    } finally {
+        if (!temporaryPage.delete() && temporaryPage.exists()) {
+            throw IOException("Unable to remove temporary MangaDex page")
+        }
+    }
+}
+
+private fun openMangaPage(url: String): HttpURLConnection {
+    var current = java.net.URI(url)
+    var redirects = 0
+    while (true) {
+        require(
+            current.scheme.equals("https", ignoreCase = true) &&
+                current.host?.endsWith(".mangadex.network", ignoreCase = true) == true &&
+                current.port in setOf(-1, 443) &&
+                current.userInfo == null &&
+                current.fragment == null,
+        ) { "MangaDex page URL is not trusted" }
+        val connection = current.toURL().openConnection() as HttpURLConnection
+        connection.connectTimeout = 10_000
+        connection.readTimeout = 20_000
+        connection.instanceFollowRedirects = false
+        connection.setRequestProperty("Referer", "https://mangadex.org/")
+        val status = connection.responseCode
+        if (status in setOf(301, 302, 303, 307, 308)) {
+            val location = connection.getHeaderField("Location")
+            connection.disconnect()
+            check(redirects < 5) { "Too many MangaDex page redirects" }
+            current = current.resolve(location ?: error("MangaDex page redirect omitted its location"))
+            redirects++
+            continue
+        }
+        if (status != HttpURLConnection.HTTP_OK) {
+            connection.disconnect()
+            throw IOException("MangaDex page request failed: HTTP $status")
+        }
+        return connection
+    }
 }
 
 @Composable
@@ -2141,3 +2502,4 @@ private const val ICON_READ_TIMEOUT_MILLIS = 4_000
 private const val MAX_ICON_BYTES = 512 * 1024
 private const val MAX_ICON_DIMENSION = 32_768
 private const val ICON_DECODE_DIMENSION = 256
+private const val MAX_MANGA_PAGE_BYTES = 16L * 1024 * 1024
