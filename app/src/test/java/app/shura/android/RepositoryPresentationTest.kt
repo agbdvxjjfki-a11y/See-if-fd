@@ -11,6 +11,7 @@ import app.shura.core.repository.RepositoryManager
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertSame
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import androidx.compose.ui.unit.LayoutDirection
@@ -142,6 +143,7 @@ class RepositoryPresentationTest {
         )
 
         assertEquals(listOf(allowed), state.extensionCatalog())
+        assertSame(state.preparedExtensionCatalog, state.extensionCatalog())
         assertEquals(allowed, state.findExtension(allowed.packageName))
         assertEquals(allowed, state.findExtension(allowed.packageName, allowed.repositoryUrl))
         assertNull(state.findExtension(allowed.packageName, "https://other.example/repo"))

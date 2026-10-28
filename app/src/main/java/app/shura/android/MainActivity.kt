@@ -362,6 +362,20 @@ private fun ShuraApp(
                         TextButton(onClick = { destination = Destination.HOME }) {
                             Text(stringResource(R.string.nav_home))
                         }
+                    } else {
+                        Box(
+                            Modifier.padding(start = 12.dp).size(38.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(MaterialTheme.colorScheme.primaryContainer),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                stringResource(R.string.brand_mark),
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
                     }
                 },
             )
@@ -570,11 +584,17 @@ private fun ExploreScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodyLarge,
                 )
-                OutlinedButton(
-                    onClick = { onNavigate(Destination.SETTINGS) },
+                Button(
+                    onClick = { onNavigate(Destination.EXTENSIONS) },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text(stringResource(R.string.explore_open_settings))
+                    Text(stringResource(R.string.explore_browse_extensions))
+                }
+                OutlinedButton(
+                    onClick = { onNavigate(Destination.READER) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(stringResource(R.string.explore_open_reader))
                 }
             }
         }
@@ -1520,6 +1540,9 @@ private fun SettingsScreen(
     onNavigate: (Destination) -> Unit,
 ) {
     var customDuration by rememberSaveable { mutableStateOf(state.autoFlipDurationSeconds.toString()) }
+    LaunchedEffect(state.autoFlipDurationSeconds) {
+        customDuration = state.autoFlipDurationSeconds.toString()
+    }
     val context = LocalContext.current
     val cacheBytes by androidx.compose.runtime.produceState<Long?>(
         initialValue = null,
@@ -1592,10 +1615,20 @@ private fun SettingsScreen(
                     label = { Text(stringResource(R.string.settings_english)) },
                 )
             }
+        }
+        SettingsGroup(
+            title = stringResource(R.string.settings_performance_title),
+            description = stringResource(R.string.settings_performance_body),
+        ) {
             SettingSwitch(
                 title = stringResource(R.string.settings_data_saver),
                 checked = state.dataSaver,
                 onCheckedChange = viewModel::setDataSaver,
+            )
+            SettingSwitch(
+                title = stringResource(R.string.settings_reduce_image_memory),
+                checked = state.reduceImageMemory,
+                onCheckedChange = viewModel::setReduceImageMemory,
             )
         }
         SettingsGroup(title = stringResource(R.string.settings_reader_title)) {
@@ -1794,14 +1827,10 @@ private fun ReaderScreen(viewModel: ShuraViewModel, state: ShuraUiState, padding
                 pauseOnTouch = state.pauseAutoFlipOnTouch,
                 orientation = state.readerOrientation,
                 fitMode = state.imageFitMode,
+                reduceImageMemory = state.reduceImageMemory,
                 showControls = state.showReaderControls,
                 onAutoFlipToggle = { viewModel.setAutoFlipEnabled(!state.autoFlipEnabled) },
                 onAutoFlipFinished = { viewModel.setAutoFlipEnabled(false) },
-                onPageTouch = {
-                    if (state.pauseAutoFlipOnTouch && state.autoFlipEnabled) {
-                        viewModel.setAutoFlipEnabled(false)
-                    }
-                },
                 modifier = Modifier.weight(1f),
             )
         }
@@ -1822,10 +1851,10 @@ private fun ImagePager(
     pauseOnTouch: Boolean,
     orientation: ReaderOrientation,
     fitMode: ImageFitMode,
+    reduceImageMemory: Boolean,
     showControls: Boolean,
     onAutoFlipToggle: () -> Unit,
     onAutoFlipFinished: () -> Unit,
-    onPageTouch: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val pagerState = rememberPagerState(pageCount = { uris.size })
@@ -1834,6 +1863,11 @@ private fun ImagePager(
     val controllerReference = remember { java.util.concurrent.atomic.AtomicReference<AutoFlipController?>(null) }
     val scope = rememberCoroutineScope()
     var controllerError by remember { mutableStateOf<String?>(null) }
+    var pausedByTouch by remember(uris) { mutableStateOf(false) }
+
+    LaunchedEffect(autoFlipEnabled) {
+        if (!autoFlipEnabled) pausedByTouch = false
+    }
 
     LaunchedEffect(uris) {
         readyPages.clear()
@@ -1900,10 +1934,11 @@ private fun ImagePager(
             ImagePage(
                 uri = uris[index],
                 fitMode = fitMode,
+                reduceImageMemory = reduceImageMemory,
                 onTouch = {
                     if (pauseOnTouch) {
                         controllerReference.get()?.onTouch()
-                        onPageTouch()
+                        if (autoFlipEnabled) pausedByTouch = true
                     }
                 },
                 onReady = { ready ->
@@ -1914,20 +1949,36 @@ private fun ImagePager(
         when (orientation) {
             ReaderOrientation.HORIZONTAL -> HorizontalPager(
                 state = pagerState,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
+                modifier = Modifier.weight(1f).fillMaxWidth()
+                    .clip(MaterialTheme.shapes.large)
+                    .background(Color(0xFF100D14)),
                 beyondViewportPageCount = 1,
             ) { index -> pageContent(index) }
             ReaderOrientation.VERTICAL -> VerticalPager(
                 state = pagerState,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
+                modifier = Modifier.weight(1f).fillMaxWidth()
+                    .clip(MaterialTheme.shapes.large)
+                    .background(Color(0xFF100D14)),
                 beyondViewportPageCount = 1,
             ) { index -> pageContent(index) }
         }
         if (showControls) {
-            OutlinedButton(onClick = onAutoFlipToggle) {
+            OutlinedButton(
+                onClick = {
+                    if (pausedByTouch && autoFlipEnabled) {
+                        controllerReference.get()?.start()
+                        pausedByTouch = false
+                    } else {
+                        onAutoFlipToggle()
+                    }
+                },
+            ) {
                 Text(
-                    if (autoFlipEnabled) stringResource(R.string.reader_auto_flip_stop)
-                    else stringResource(R.string.reader_auto_flip_start),
+                    when {
+                        pausedByTouch && autoFlipEnabled -> stringResource(R.string.reader_auto_flip_resume)
+                        autoFlipEnabled -> stringResource(R.string.reader_auto_flip_stop)
+                        else -> stringResource(R.string.reader_auto_flip_start)
+                    },
                 )
             }
         }
@@ -1944,6 +1995,7 @@ private sealed interface ImageLoadState {
 private fun ImagePage(
     uri: Uri,
     fitMode: ImageFitMode,
+    reduceImageMemory: Boolean,
     onTouch: () -> Unit,
     onReady: (Boolean) -> Unit,
 ) {
@@ -1953,10 +2005,11 @@ private fun ImagePage(
         initialValue = ImageLoadState.Loading,
         key1 = uri,
         key2 = retryKey,
+        key3 = reduceImageMemory,
     ) {
         value = ImageLoadState.Loading
         value = withContext(Dispatchers.IO) {
-            runCatching { decodeForDisplay(context, uri) }
+            runCatching { decodeForDisplay(context, uri, reduceImageMemory) }
                 .fold(
                     onSuccess = { ImageLoadState.Ready(it) },
                     onFailure = { ImageLoadState.Failed(it.message) },
@@ -2024,16 +2077,26 @@ private fun ImagePage(
     }
 }
 
-private fun decodeForDisplay(context: android.content.Context, uri: Uri): Bitmap {
+internal fun readerImageSampleSize(width: Int, height: Int, reduceImageMemory: Boolean): Int {
+    require(width > 0 && height > 0) { "Image dimensions must be positive" }
+    val maxDimension = if (reduceImageMemory) 1_024 else 1_600
+    var sampleSize = 1
+    while (width / sampleSize > maxDimension || height / sampleSize > maxDimension) {
+        sampleSize *= 2
+    }
+    return sampleSize
+}
+
+private fun decodeForDisplay(
+    context: android.content.Context,
+    uri: Uri,
+    reduceImageMemory: Boolean,
+): Bitmap {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
         ?: error("Unable to read image")
     require(bounds.outWidth > 0 && bounds.outHeight > 0) { "Invalid image" }
-    val maxDimension = 1600
-    var sampleSize = 1
-    while (bounds.outWidth / sampleSize > maxDimension || bounds.outHeight / sampleSize > maxDimension) {
-        sampleSize *= 2
-    }
+    val sampleSize = readerImageSampleSize(bounds.outWidth, bounds.outHeight, reduceImageMemory)
     val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }
     return context.contentResolver.openInputStream(uri)?.use {
         BitmapFactory.decodeStream(it, null, options)

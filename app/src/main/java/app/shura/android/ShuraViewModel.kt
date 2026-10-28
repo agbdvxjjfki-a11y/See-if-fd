@@ -50,6 +50,7 @@ data class ShuraUiState(
     val showReaderControls: Boolean = true,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val dataSaver: Boolean = false,
+    val reduceImageMemory: Boolean = false,
     val maintenanceMessage: String? = null,
     val language: String = "ar",
     val initialized: Boolean = false,
@@ -720,6 +721,12 @@ class ShuraViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setReduceImageMemory(enabled: Boolean) {
+        updatePreference(REDUCE_IMAGE_MEMORY_KEY, enabled) {
+            copy(reduceImageMemory = enabled)
+        }
+    }
+
     fun clearTemporaryApkFiles() {
         installJobs.values.toList().forEach(Job::cancel)
         installJobs.clear()
@@ -796,6 +803,7 @@ class ShuraViewModel(application: Application) : AndroidViewModel(application) {
                     ThemeMode.SYSTEM
                 },
             dataSaver = preferences.getBoolean(DATA_SAVER_KEY, false),
+            reduceImageMemory = preferences.getBoolean(REDUCE_IMAGE_MEMORY_KEY, false),
             language = preferences.getString(LANGUAGE_KEY, "ar")?.takeIf { it in setOf("ar", "en") } ?: "ar",
         )
     }
@@ -889,6 +897,7 @@ class ShuraViewModel(application: Application) : AndroidViewModel(application) {
         const val IMAGE_FIT_KEY = "reader_image_fit"
         const val SHOW_READER_CONTROLS_KEY = "reader_show_controls"
         const val DATA_SAVER_KEY = "data_saver"
+        const val REDUCE_IMAGE_MEMORY_KEY = "reduce_image_memory"
         const val DARK_THEME_KEY = "dark_theme"
         const val THEME_MODE_KEY = "theme_mode"
         const val LANGUAGE_KEY = "language"

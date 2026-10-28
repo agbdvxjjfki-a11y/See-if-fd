@@ -22,6 +22,8 @@
     <string name="explore_unavailable_title">لا توجد مصادر أعمال قابلة للتشغيل</string>
     <string name="explore_unavailable_body">لا يتضمن Shura حاليًا محرك المصادر المتوافق المطلوب لعرض نتائج حقيقية. لن نعرض نتائج أو أغلفة وهمية. يمكنك إدارة حزم الإضافات من الإعدادات، لكن تثبيتها وحده لا يشغّل المصادر.</string>
     <string name="explore_open_settings">عرض إمكانات المصادر في الإعدادات</string>
+    <string name="explore_browse_extensions">استكشاف كتالوج الإضافات</string>
+    <string name="explore_open_reader">فتح قارئ الصور المحلية</string>
     <string name="library_title">مكتبتي</string>
     <string name="library_count">%1$d عنوان محفوظ</string>
     <string name="library_empty_title">مكتبتك فارغة حاليًا</string>
@@ -112,6 +114,7 @@
     <string name="reader_retry">إعادة المحاولة</string>
     <string name="reader_auto_flip_start">تشغيل التقليب التلقائي</string>
     <string name="reader_auto_flip_stop">إيقاف التقليب التلقائي</string>
+    <string name="reader_auto_flip_resume">استئناف التقليب التلقائي</string>
     <string name="reader_translation_note">طبقة الترجمة جاهزة للتوسعة، لكن OCR ومحرك الترجمة غير متوفرين بعد.</string>
     <string name="settings_title">الإعدادات</string>
     <string name="settings_sources_title">المستودعات والإضافات</string>
@@ -123,6 +126,9 @@
     <string name="settings_theme_light">فاتح</string>
     <string name="settings_theme_dark">داكن</string>
     <string name="settings_data_saver">توفير البيانات (تعطيل تحميل أيقونات الإضافات)</string>
+    <string name="settings_performance_title">الأداء واستهلاك الذاكرة</string>
+    <string name="settings_performance_body">تؤثر هذه الخيارات فعليًا في تنزيل الأيقونات وحجم الصور المفكوكة في القارئ، وتُحفظ بين مرات التشغيل.</string>
+    <string name="settings_reduce_image_memory">تقليل ذاكرة صور القارئ (قد يقل الوضوح)</string>
     <string name="settings_language">لغة التطبيق</string>
     <string name="settings_arabic">العربية</string>
     <string name="settings_english">English</string>
@@ -145,7 +151,7 @@
     <string name="settings_policy_body">حظر المؤشرات الصريحة مدمج ولا يمكن تعطيله من التطبيق. فحص البيانات لا يحلل صور الصفحات.</string>
     <string name="settings_compatibility_title">حدود التوافق</string>
     <string name="settings_compatibility_body">يمكن تثبيت حزم إضافات Mihon المتوافقة بموافقة Android واكتشافها على الجهاز. لا يشغّل Shura مصادرها بعد، ولا يدعم تنزيل الفصول.</string>
-    <string name="settings_storage_title">الأداء والتخزين</string>
+    <string name="settings_storage_title">التخزين</string>
     <string name="settings_storage_usage">مساحة التخزين المؤقت وفهارس المستودعات: %1$s</string>
     <string name="settings_storage_note">تُحفظ أحدث فهارس المستودعات المسموح بها محليًا ضمن حد تخزين ثابت. تُحذف ملفات APK المؤقتة بأمان؛ ولا يخزن Shura فصولًا.</string>
     <string name="settings_clear_temporary">إلغاء عمليات APK وتنظيف ملفات APK المؤقتة</string>

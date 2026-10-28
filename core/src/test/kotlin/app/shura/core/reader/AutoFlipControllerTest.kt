@@ -68,6 +68,35 @@ class AutoFlipControllerTest {
     }
 
     @Test
+    fun touchPausedControllerCanResumeWithoutChangingItsConfiguredDuration() {
+        val settings = AutoFlipSettings().apply {
+            durationSeconds = 1
+            pauseOnTouch = true
+        }
+        val flips = CountDownLatch(1)
+        val controller = AutoFlipController(
+            settings = settings,
+            isPageReady = { true },
+            advancePage = {
+                flips.countDown()
+                true
+            },
+        )
+
+        controller.use {
+            controller.start()
+            controller.onTouch()
+            Thread.sleep(1_100)
+            assertTrue(flips.count == 1L)
+
+            controller.start()
+
+            assertTrue(flips.await(3, TimeUnit.SECONDS))
+            assertTrue(settings.durationSeconds == 1)
+        }
+    }
+
+    @Test
     fun changingDurationResetsThePendingTimerAndRejectsUnsafeValues() {
         val settings = AutoFlipSettings()
         val controller = AutoFlipController(

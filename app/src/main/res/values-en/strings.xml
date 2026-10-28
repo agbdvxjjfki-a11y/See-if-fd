@@ -22,6 +22,8 @@
     <string name="explore_unavailable_title">No runnable title sources</string>
     <string name="explore_unavailable_body">Shura does not currently include the compatible source engine needed for real results. We will not show fake results or covers. You can manage extension packages in Settings, but installing one does not make its source runnable.</string>
     <string name="explore_open_settings">View source capabilities in Settings</string>
+    <string name="explore_browse_extensions">Browse the extension catalog</string>
+    <string name="explore_open_reader">Open the local image reader</string>
     <string name="library_title">Your library</string>
     <string name="library_count">%1$d saved titles</string>
     <string name="library_empty_title">Your library is empty</string>
@@ -112,6 +114,7 @@
     <string name="reader_retry">Retry</string>
     <string name="reader_auto_flip_start">Start auto-flip</string>
     <string name="reader_auto_flip_stop">Stop auto-flip</string>
+    <string name="reader_auto_flip_resume">Resume auto-flip</string>
     <string name="reader_translation_note">The translation overlay can be extended, but OCR and a translation engine are not available yet.</string>
     <string name="settings_title">Settings</string>
     <string name="settings_sources_title">Repositories and extensions</string>
@@ -123,6 +126,9 @@
     <string name="settings_theme_light">Light</string>
     <string name="settings_theme_dark">Dark</string>
     <string name="settings_data_saver">Data saver (disable extension icon downloads)</string>
+    <string name="settings_performance_title">Performance and memory</string>
+    <string name="settings_performance_body">These options affect icon downloads and the decoded image size in the reader, and are saved across restarts.</string>
+    <string name="settings_reduce_image_memory">Reduce reader image memory (may reduce sharpness)</string>
     <string name="settings_language">App language</string>
     <string name="settings_arabic">العربية</string>
     <string name="settings_english">English</string>
@@ -145,7 +151,7 @@
     <string name="settings_policy_body">Blocking explicit indicators is built in and cannot be disabled in the app. Metadata checks do not analyze page images.</string>
     <string name="settings_compatibility_title">Compatibility limits</string>
     <string name="settings_compatibility_body">Compatible Mihon APKs can be installed with Android confirmation and discovered on the device. Shura cannot run their sources yet and does not download chapters.</string>
-    <string name="settings_storage_title">Performance and storage</string>
+    <string name="settings_storage_title">Storage</string>
     <string name="settings_storage_usage">Temporary cache and repository catalogs: %1$s</string>
     <string name="settings_storage_note">Latest allowed repository catalogs are saved locally within a fixed storage limit. Temporary APKs are safely removed; Shura does not store chapters.</string>
     <string name="settings_clear_temporary">Cancel APK operations and clean temporary APK files</string>
