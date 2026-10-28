@@ -44,4 +44,4 @@ Checkpoint: 2026-10-28
 
 ## Checkpoint persistence
 
-The tested implementation is committed as `035d77d`. This status update is staged for its own checkpoint commit; branch push is pending. The development branch must remain `work/shura-development`; do not commit to `main`, merge PR #1, enable auto-merge, or publish a release without explicit authorization.
+The tested implementation is committed as `035d77d`; this status checkpoint is committed as `af122fe`. Both commits were pushed to `origin/work/shura-development`. The development branch must remain `work/shura-development`; do not commit to `main`, merge PR #1, enable auto-merge, or publish a release without explicit authorization.
