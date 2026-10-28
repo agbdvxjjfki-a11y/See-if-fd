@@ -18,6 +18,15 @@ data class ContentPolicyResult(
 )
 
 class ContentPolicyEngine {
+    fun isBlocked(extension: ExtensionDescriptor): Boolean =
+        extension.adultFlag > 0 ||
+            containsExplicitIndicator(extension.name) ||
+            containsExplicitIndicator(extension.packageName) ||
+            extension.sources.any { source ->
+                containsExplicitIndicator(source.name) ||
+                    source.message?.let(::containsExplicitIndicator) == true
+            }
+
     fun evaluate(
         extension: ExtensionDescriptor,
         description: String? = null,
@@ -82,15 +91,24 @@ class ContentPolicyEngine {
     }
 
     private fun indicators(value: String): List<Pair<String, Boolean>> {
-        val normalized = value.lowercase().replace(Regex("[^a-z0-9]+"), " ").trim()
+        val normalized = value.lowercase().replace(NON_ALPHANUMERIC, " ").trim()
         if (normalized.isEmpty()) return emptyList()
 
-        return INDICATORS.filter { indicator ->
-            Regex("""(?:^|\s)${Regex.escape(indicator.first)}(?:$|\s)""").containsMatchIn(normalized)
+        return INDICATOR_PATTERNS.filter { (pattern, _) ->
+            pattern.containsMatchIn(normalized)
+        }.map { (_, indicator) ->
+            indicator
         }
     }
 
+    private fun containsExplicitIndicator(value: String): Boolean {
+        val normalized = value.lowercase().replace(NON_ALPHANUMERIC, " ").trim()
+        return normalized.isNotEmpty() &&
+            EXPLICIT_INDICATOR_PATTERNS.any { it.containsMatchIn(normalized) }
+    }
+
     private companion object {
+        val NON_ALPHANUMERIC = Regex("[^a-z0-9]+")
         val INDICATORS = listOf(
             "adult" to false,
             "ecchi" to false,
@@ -105,5 +123,11 @@ class ContentPolicyEngine {
             "uncensored" to true,
             "xxx" to true,
         )
+        val INDICATOR_PATTERNS = INDICATORS.map { indicator ->
+            Regex("""(?:^|\s)${Regex.escape(indicator.first)}(?:$|\s)""") to indicator
+        }
+        val EXPLICIT_INDICATOR_PATTERNS = INDICATOR_PATTERNS
+            .filter { (_, indicator) -> indicator.second }
+            .map { (pattern, _) -> pattern }
     }
 }

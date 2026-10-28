@@ -3,6 +3,9 @@ package app.shura.core.repository
 import app.shura.core.content.ContentPolicyEngine
 import java.time.Instant
 import java.util.LinkedHashMap
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionException
+import java.util.concurrent.Executor
 import java.util.logging.Level
 import java.util.logging.Logger
 
@@ -26,13 +29,31 @@ class RepositoryManager(
     private val indexSource: RepositoryIndexSource,
     private val parser: RepositoryCatalogParser = RepositoryCatalogParser(),
     private val contentPolicy: ContentPolicyEngine = ContentPolicyEngine(),
+    private val parsingExecutor: Executor = DIRECT_EXECUTOR,
+    private val externalFetchExecutor: Executor = DIRECT_EXECUTOR,
+    private val catalogCacheStore: RepositoryCatalogCacheStore = NoRepositoryCatalogCache,
 ) {
     private val catalogs = LinkedHashMap<String, RepositoryCatalogSnapshot>()
 
     init {
         store.load().forEach { url ->
             val repository = RepositoryAddress.parse(url)
-            require(catalogs.putIfAbsent(repository.normalized, RepositoryCatalogSnapshot(repository)) == null) {
+            val cached = try {
+                catalogCacheStore.load(repository.normalized)
+                    ?.let { snapshot ->
+                        snapshot.copy(extensions = snapshot.extensions.filterNot(contentPolicy::isBlocked))
+                    }
+            } catch (error: Exception) {
+                LOGGER.log(Level.WARNING, "Unable to restore cached repository catalog: ${repository.normalized}", error)
+                RepositoryCatalogSnapshot(
+                    repository = repository,
+                    error = "تعذرت استعادة نسخة الفهرس المحلية: ${error.message ?: error.javaClass.simpleName}",
+                )
+            }
+            require(catalogs.putIfAbsent(
+                repository.normalized,
+                cached ?: RepositoryCatalogSnapshot(repository),
+            ) == null) {
                 "إعدادات المستودعات تحتوي عنوانًا مكررًا: ${repository.normalized}"
             }
         }
@@ -41,13 +62,51 @@ class RepositoryManager(
     @Synchronized
     fun repositories(): List<RepositoryCatalogSnapshot> = catalogs.values.toList()
 
-    @Synchronized
     fun addRepository(url: String): RepositoryCatalogSnapshot {
         val repository = RepositoryAddress.parse(url)
-        require(repository.normalized !in catalogs) { "المستودع مضاف بالفعل" }
+        synchronized(this) {
+            require(repository.normalized !in catalogs) { "المستودع مضاف بالفعل" }
+        }
         val validated = fetchAndParse(repository)
-        store.save(catalogs.values.map { it.repository.inputUrl } + repository.inputUrl)
-        return validated.copy(lastUpdated = Instant.now()).also { catalogs[repository.normalized] = it }
+        val persisted = validated.copy(lastUpdated = Instant.now())
+        catalogCacheStore.save(persisted)
+        return synchronized(this) {
+            require(repository.normalized !in catalogs) { "المستودع مضاف بالفعل" }
+            store.save(catalogs.values.map { it.repository.inputUrl } + repository.inputUrl)
+            persisted.also { catalogs[repository.normalized] = it }
+        }
+    }
+
+    fun replaceRepository(existingUrl: String, replacementUrl: String): RepositoryCatalogSnapshot {
+        val existing = RepositoryAddress.parse(existingUrl)
+        val replacement = RepositoryAddress.parse(replacementUrl)
+        require(existing.normalized != replacement.normalized) { "رابط المستودع لم يتغير" }
+        synchronized(this) {
+            require(existing.normalized in catalogs) { "المستودع المراد تعديله غير موجود" }
+            require(replacement.normalized !in catalogs) { "رابط المستودع الجديد مضاف بالفعل" }
+        }
+        val validated = fetchAndParse(replacement).copy(lastUpdated = Instant.now())
+        catalogCacheStore.save(validated)
+        return synchronized(this) {
+            require(existing.normalized in catalogs) { "تم حذف المستودع أثناء التعديل" }
+            require(replacement.normalized !in catalogs) { "رابط المستودع الجديد أضيف أثناء التعديل" }
+            val savedUrls = catalogs.values.map { snapshot ->
+                if (snapshot.repository.normalized == existing.normalized) {
+                    replacement.inputUrl
+                } else {
+                    snapshot.repository.inputUrl
+                }
+            }
+            store.save(savedUrls)
+            catalogs.remove(existing.normalized)
+            catalogs[replacement.normalized] = validated
+            try {
+                catalogCacheStore.remove(existing.normalized)
+            } catch (error: Exception) {
+                LOGGER.log(Level.WARNING, "Unable to remove replaced repository catalog cache: ${existing.normalized}", error)
+            }
+            validated
+        }
     }
 
     fun testRepository(url: String): RepositoryCatalogSnapshot =
@@ -56,30 +115,41 @@ class RepositoryManager(
     private fun fetchAndParse(repository: RepositoryAddress): RepositoryCatalogSnapshot {
         val fetched = indexSource.fetch(repository)
         val parsed = try {
-            parser.parse(fetched, repository) { url ->
-                indexSource.fetchExternalList(url, repository.inputUrl)
-            }
+            CompletableFuture.supplyAsync(
+                {
+                    parser.parse(fetched, repository) { url ->
+                        CompletableFuture.supplyAsync(
+                            { indexSource.fetchExternalList(url, repository.inputUrl) },
+                            externalFetchExecutor,
+                        ).join()
+                    }.let { parsed ->
+                        parsed.copy(extensions = parsed.extensions.filterNot(contentPolicy::isBlocked))
+                    }
+                },
+                parsingExecutor,
+            ).join()
         } catch (error: Exception) {
+            val cause = if (error is CompletionException) error.cause ?: error else error
             val diagnostic = fetched.diagnostic
             LOGGER.log(
                 Level.WARNING,
                 "Repository index downloaded but parsing failed: input=${diagnostic.inputUrl}, " +
                     "final=${diagnostic.finalUrl}, status=${diagnostic.statusCode}, " +
                     "contentType=${diagnostic.contentType}, bodyDownloaded=${diagnostic.bodyDownloaded}",
-                error,
+                cause,
             )
             throw RepositoryIndexParseException(
                 diagnostic = diagnostic,
                 message =
                     "تم تنزيل الفهرس من ${diagnostic.finalUrl} بنجاح (HTTP ${diagnostic.statusCode}, " +
                         "${diagnostic.contentType ?: "نوع محتوى غير معروف"}) لكن تعذر تحليله: " +
-                        (error.message ?: error.javaClass.simpleName),
-                cause = error,
+                    (cause.message ?: cause.javaClass.simpleName),
+                cause = cause,
             )
         }
         return RepositoryCatalogSnapshot(
             repository = repository,
-            extensions = parsed.extensions.filterNot { contentPolicy.evaluate(it).isBlocked },
+            extensions = parsed.extensions,
             storeName = parsed.name,
             indexUrl = fetched.diagnostic.finalUrl,
             contentType = fetched.contentType,
@@ -91,20 +161,29 @@ class RepositoryManager(
         )
     }
 
-    @Synchronized
     fun removeRepository(url: String): Boolean {
         val normalized = RepositoryAddress.parse(url).normalized
-        if (normalized !in catalogs) return false
-        store.save(catalogs.filterKeys { it != normalized }.values.map { it.repository.inputUrl })
-        catalogs.remove(normalized)
+        val removed = synchronized(this) {
+            if (normalized !in catalogs) return@synchronized false
+            store.save(catalogs.filterKeys { it != normalized }.values.map { it.repository.inputUrl })
+            catalogs.remove(normalized)
+            true
+        }
+        if (!removed) return false
+        try {
+            catalogCacheStore.remove(normalized)
+        } catch (error: Exception) {
+            LOGGER.log(Level.WARNING, "Unable to remove repository catalog cache: $normalized", error)
+        }
         return true
     }
 
-    @Synchronized
     fun refreshRepository(url: String): RepositoryCatalogSnapshot {
         val requestedRepository = RepositoryAddress.parse(url)
-        val previous = catalogs[requestedRepository.normalized]
-            ?: throw IllegalArgumentException("المستودع غير مضاف")
+        val previous = synchronized(this) {
+            catalogs[requestedRepository.normalized]
+                ?: throw IllegalArgumentException("المستودع غير مضاف")
+        }
         val repository = previous.repository
         val refreshed = try {
             fetchAndParse(repository).copy(lastUpdated = Instant.now())
@@ -129,8 +208,12 @@ class RepositoryManager(
                 },
             )
         }
-        catalogs[repository.normalized] = refreshed
-        return refreshed
+        if (refreshed.error == null) catalogCacheStore.save(refreshed)
+        return synchronized(this) {
+            if (repository.normalized !in catalogs) return@synchronized refreshed
+            catalogs[repository.normalized] = refreshed
+            refreshed
+        }
     }
 
     fun refreshAll(): List<RepositoryCatalogSnapshot> =
@@ -147,7 +230,6 @@ class RepositoryManager(
         return catalogs.values.asSequence()
             .filter { normalizedRepository == null || it.repository.normalized == normalizedRepository }
             .flatMap { it.extensions.asSequence() }
-            .filterNot { contentPolicy.evaluate(it).isBlocked }
             .filter { language == null || it.language.equals(language, ignoreCase = true) }
             .filter { extension ->
                 normalizedQuery.isEmpty() ||
@@ -162,13 +244,13 @@ class RepositoryManager(
     fun availableUpdates(installedVersionCodes: Map<String, Long>): List<ExtensionDescriptor> =
         catalogs.values.asSequence()
             .flatMap { it.extensions.asSequence() }
-            .filterNot { contentPolicy.evaluate(it).isBlocked }
             .filter { extension ->
                 installedVersionCodes[extension.packageName]?.let { extension.versionCode > it } == true
             }
             .toList()
 
     private companion object {
+        val DIRECT_EXECUTOR = Executor { command -> command.run() }
         val LOGGER: Logger = Logger.getLogger(RepositoryManager::class.java.name)
     }
 }

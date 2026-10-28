@@ -8,6 +8,9 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import java.net.URI
 
+private val SHA256_HEX_PATTERN = Regex("[A-Fa-f0-9]{64}")
+private val PACKAGE_NAME_PATTERN = Regex("[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)+")
+
 class RepositoryAddress private constructor(
     val url: URI,
     val inputUrl: String,
@@ -215,10 +218,10 @@ class JsonRepositoryIndexParser {
             apkUrl = apkUrl,
             iconUrl = item.optionalString("icon"),
             apkSha256 = item.optionalString("sha256")?.also {
-                require(it.matches(Regex("[A-Fa-f0-9]{64}"))) { "بصمة APK غير صالحة" }
+                require(it.matches(SHA256_HEX_PATTERN)) { "بصمة APK غير صالحة" }
             },
             apkSignerSha256 = item.optionalString("signingKey")?.also {
-                require(it.matches(Regex("[A-Fa-f0-9]{64}"))) { "بصمة توقيع الإضافة غير صالحة" }
+                require(it.matches(SHA256_HEX_PATTERN)) { "بصمة توقيع الإضافة غير صالحة" }
             },
         )
     }
@@ -308,7 +311,7 @@ class ProtobufRepositoryIndexParser {
                 adultFlag = if (item.contentWarning == ContentWarning.CONTENT_WARNING_NSFW) 1 else 0,
                 sources = sources,
                 iconUrl = item.resources.iconUrl.takeIf(String::isNotBlank),
-                apkSignerSha256 = index.signingKey.takeIf { it.matches(Regex("[A-Fa-f0-9]{64}")) },
+                apkSignerSha256 = index.signingKey.takeIf { it.matches(SHA256_HEX_PATTERN) },
             )
         }
         return ParsedRepositoryIndex(
@@ -324,7 +327,7 @@ private fun safeUrl(uri: URI): String =
         if (uri.rawQuery != null) "?<redacted>" else ""
 
 private fun requireValidPackage(packageName: String) {
-    require(packageName.matches(Regex("[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)+"))) {
+    require(packageName.matches(PACKAGE_NAME_PATTERN)) {
         "معرّف حزمة الإضافة غير صالح"
     }
 }

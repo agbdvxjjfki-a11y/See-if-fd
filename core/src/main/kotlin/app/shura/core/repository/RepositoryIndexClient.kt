@@ -43,7 +43,7 @@ class RepositoryIndexFetchException(
 class RepositoryIndexClient(
     private val connectTimeoutMillis: Int = 8_000,
     private val readTimeoutMillis: Int = 8_000,
-    private val maxIndexBytes: Int = 2 * 1024 * 1024,
+    private val maxIndexBytes: Int = 16 * 1024 * 1024,
 ) : RepositoryIndexSource {
     init {
         require(connectTimeoutMillis > 0) { "مهلة الاتصال يجب أن تكون موجبة" }

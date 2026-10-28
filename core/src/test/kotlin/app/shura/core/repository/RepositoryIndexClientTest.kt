@@ -200,18 +200,62 @@ class RepositoryIndexClientTest {
     fun keiyoushiPublicIndexCanBeCheckedOnDemand() {
         assumeTrue(System.getenv("SHURA_RUN_INTEGRATION_TESTS") == "true")
         val url = "https://github.com/keiyoushi/extensions/raw/repo/index.pb"
-        val manager = RepositoryManager(InMemoryRepositoryStore(), RepositoryIndexClient())
-        val snapshot = manager.addRepository(url)
+        val repository = RepositoryAddress.parse(url)
+        val client = RepositoryIndexClient()
+        val networkStarted = System.nanoTime()
+        val fetched = client.fetch(repository)
+        val networkMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - networkStarted)
+
+        val parseStarted = System.nanoTime()
+        val parsed = RepositoryCatalogParser().parse(fetched, repository)
+        val parseMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - parseStarted)
+        val filterStarted = System.nanoTime()
+        val allowed = parsed.extensions.filterNot(app.shura.core.content.ContentPolicyEngine()::isBlocked)
+        val filterMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - filterStarted)
+        val saveStore = InMemoryRepositoryStore()
+        val saveManager = RepositoryManager(saveStore, RepositoryIndexSource { fetched })
+        val saveStarted = System.nanoTime()
+        val snapshot = saveManager.addRepository(url)
+        val parseFetchSaveMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - saveStarted)
+        val searchStarted = System.nanoTime()
+        val searchResult = saveManager.search(query = "comicfury")
+        val searchMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - searchStarted)
 
         println(
             "Keiyoushi index: input=$url, final=${snapshot.indexUrl}, " +
                 "status=${snapshot.httpStatus}, contentType=${snapshot.contentType}, " +
                 "redirects=${snapshot.redirectStatuses.size}, extensions=${snapshot.extensions.size}, " +
-                "entries=${snapshot.extensions.take(10).joinToString { "${it.name} [${it.packageName}] ${it.version}" }}",
+                "entries=${snapshot.extensions.take(10).joinToString { "${it.name} [${it.packageName}] ${it.version}" }} " +
+                "network_ms=$networkMillis parse_ms=$parseMillis policy_filter_ms=$filterMillis " +
+                "manager_cached_fetch_parse_filter_save_ms=$parseFetchSaveMillis local_search_ms=$searchMillis",
+        )
+        val comicFury = snapshot.extensions.single {
+            it.packageName == "eu.kanade.tachiyomi.extension.all.comicfury"
+        }
+        assertEquals("Comic Fury", comicFury.name)
+        assertEquals("1.6.0", comicFury.version)
+        assertEquals(106_000L, comicFury.versionCode)
+        assertEquals(
+            "https://github.com/keiyoushi/extensions/releases/download/24bc6c2/tachiyomi-all.comicfury-v1.6.0.apk",
+            comicFury.apkUrl,
+        )
+        assertEquals(
+            "9add655a78e96c4ec7a53ef89dccb557cb5d767489fac5e785d671a5a75d4da2",
+            comicFury.apkSignerSha256,
+        )
+        println(
+            "Verified real APK candidate: name=${comicFury.name}, package=${comicFury.packageName}, " +
+                "versionName=${comicFury.version}, versionCode=${comicFury.versionCode}, " +
+                "apkUrl=${comicFury.apkUrl}, signerSha256=${comicFury.apkSignerSha256}",
         )
         assertEquals(200, snapshot.httpStatus)
         assertTrue(snapshot.bodyDownloaded)
-        assertTrue(manager.repositories().single().extensions.isNotEmpty())
+        assertTrue(allowed.size > 1_000)
+        assertTrue(saveManager.repositories().single().extensions.isNotEmpty())
+        assertEquals(
+            "eu.kanade.tachiyomi.extension.all.comicfury",
+            searchResult.first { it.packageName == "eu.kanade.tachiyomi.extension.all.comicfury" }.packageName,
+        )
     }
 
     @Test

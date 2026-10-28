@@ -1,6 +1,11 @@
 package app.shura.core.repository
 
 import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -70,6 +75,36 @@ class RepositoryManagerTest {
     }
 
     @Test
+    fun replacingRepositoryValidatesFirstAndKeepsTheOldIndexUntilCommit() {
+        val store = InMemoryRepositoryStore()
+        val oldUrl = "https://example.org/old"
+        val newUrl = "https://example.org/new"
+        var rejectReplacement = true
+        val manager = RepositoryManager(store, RepositoryIndexSource { repository ->
+            if (repository.normalized == newUrl && rejectReplacement) {
+                error("replacement unavailable")
+            }
+            fetched(indexJson(versionCode = 8), repository)
+        })
+        manager.addRepository(oldUrl)
+
+        assertFailsWith<IllegalStateException> {
+            manager.replaceRepository(oldUrl, newUrl)
+        }
+        assertEquals(listOf(oldUrl), store.load())
+        assertEquals(listOf(oldUrl), manager.repositories().map { it.repository.normalized })
+
+        rejectReplacement = false
+        val replaced = manager.replaceRepository(oldUrl, newUrl)
+        assertEquals(newUrl, replaced.repository.normalized)
+        assertEquals(listOf(newUrl), store.load())
+        assertEquals(listOf(newUrl), manager.repositories().map { it.repository.normalized })
+
+        val restored = RepositoryManager(store, RepositoryIndexSource { fetched("[]", it) })
+        assertEquals(listOf(newUrl), restored.repositories().map { it.repository.normalized })
+    }
+
+    @Test
     fun doesNotPersistAnIndexThatCannotBeParsed() {
         val store = InMemoryRepositoryStore()
         val manager = RepositoryManager(
@@ -104,6 +139,58 @@ class RepositoryManagerTest {
     }
 
     @Test
+    fun cachedCatalogSurvivesProcessRestartAndFailedRefresh() {
+        val configurationStore = FileRepositoryConfigurationStore(temporaryDirectory.resolve("repositories.json"))
+        val cacheStore = FileRepositoryCatalogCacheStore(temporaryDirectory.resolve("catalog-cache"))
+        var failNetwork = false
+        val source = RepositoryIndexSource { repository ->
+            if (failNetwork) error("network unavailable after restart")
+            fetched(indexJson(versionCode = 9), repository)
+        }
+        val firstManager = RepositoryManager(
+            store = configurationStore,
+            indexSource = source,
+            catalogCacheStore = cacheStore,
+        )
+        val firstSnapshot = firstManager.addRepository("https://example.org/extensions")
+
+        failNetwork = true
+        val restartedManager = RepositoryManager(
+            store = configurationStore,
+            indexSource = source,
+            catalogCacheStore = cacheStore,
+        )
+        val refreshed = restartedManager.refreshAll().single()
+
+        assertEquals(9L, refreshed.extensions.single().versionCode)
+        assertEquals(firstSnapshot.lastUpdated, refreshed.lastUpdated)
+        assertEquals("network unavailable after restart", refreshed.error)
+        assertEquals(9L, cacheStore.load("https://example.org/extensions")?.extensions?.single()?.versionCode)
+    }
+
+    @Test
+    fun cachedCatalogIsRecheckedByContentPolicyAfterRestart() {
+        val configurationStore = FileRepositoryConfigurationStore(temporaryDirectory.resolve("policy-repositories.json"))
+        val cacheStore = FileRepositoryCatalogCacheStore(temporaryDirectory.resolve("policy-catalog-cache"))
+        val source = RepositoryIndexSource { repository -> fetched(policyIndex(), repository) }
+        RepositoryManager(
+            store = configurationStore,
+            indexSource = source,
+            catalogCacheStore = cacheStore,
+        ).addRepository("https://example.org/extensions")
+
+        val restarted = RepositoryManager(
+            store = configurationStore,
+            indexSource = RepositoryIndexSource { error("offline") },
+            catalogCacheStore = cacheStore,
+        )
+        val restored = restarted.refreshAll().single()
+
+        assertEquals(listOf("org.example.safe"), restored.extensions.map { it.packageName })
+        assertEquals("offline", restored.error)
+    }
+
+    @Test
     fun policyBlockedExtensionsNeverEnterCatalogSearchUpdatesOrRestoredCatalog() {
         val store = InMemoryRepositoryStore()
         val source = RepositoryIndexSource { fetched(policyIndex(), it) }
@@ -135,6 +222,64 @@ class RepositoryManagerTest {
 
         assertEquals(1, result.extensions.size)
         assertEquals("org.example.safe", result.extensions.single().packageName)
+    }
+
+    @Test
+    fun repositoryReadsDoNotWaitForNetworkFetchInsideManagerLock() {
+        val requestStarted = CountDownLatch(1)
+        val allowRequestToFinish = CountDownLatch(1)
+        val manager = RepositoryManager(
+            InMemoryRepositoryStore(),
+            RepositoryIndexSource { repository ->
+                requestStarted.countDown()
+                check(allowRequestToFinish.await(5, TimeUnit.SECONDS))
+                fetched("[]", repository)
+            },
+        )
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val addRepository = executor.submit {
+                manager.addRepository("https://example.org/extensions")
+            }
+            assertTrue(requestStarted.await(5, TimeUnit.SECONDS))
+
+            val reads = executor.submit<List<RepositoryCatalogSnapshot>> { manager.repositories() }
+            assertEquals(emptyList(), reads.get(500, TimeUnit.MILLISECONDS))
+
+            allowRequestToFinish.countDown()
+            addRepository.get(5, TimeUnit.SECONDS)
+            assertEquals(1, manager.repositories().size)
+        } finally {
+            allowRequestToFinish.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun parsesCatalogOnConfiguredBackgroundExecutor() {
+        val executor = Executors.newSingleThreadExecutor { command ->
+            Thread(command, "repository-parser-test")
+        }
+        val parsingThreadName = AtomicReference<String?>()
+        val parsingExecutor = Executor { command ->
+            executor.execute {
+                parsingThreadName.set(Thread.currentThread().name)
+                command.run()
+            }
+        }
+        try {
+            val manager = RepositoryManager(
+                InMemoryRepositoryStore(),
+                RepositoryIndexSource { fetched(indexJson(versionCode = 4), it) },
+                parsingExecutor = parsingExecutor,
+            )
+
+            manager.testRepository("https://example.org/extensions")
+
+            assertEquals("repository-parser-test", parsingThreadName.get())
+        } finally {
+            executor.shutdownNow()
+        }
     }
 
     private fun indexJson(versionCode: Int): String =

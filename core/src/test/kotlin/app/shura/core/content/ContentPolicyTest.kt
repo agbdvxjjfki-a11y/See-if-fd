@@ -147,4 +147,50 @@ class ContentPolicyTest {
         assertFalse(result.isBlocked)
         assertTrue(result.warnings.isNotEmpty())
     }
+
+    @Test
+    fun optimizedBlockGateMatchesFullPolicyEvaluation() {
+        val engine = ContentPolicyEngine()
+        val descriptors = listOf(
+            descriptor(name = "Daily Reader"),
+            descriptor(name = "Adult Romance"),
+            descriptor(name = "Explicit Reader"),
+            descriptor(adultFlag = 1),
+            descriptor(sourceName = "Hentai Library"),
+            descriptor(sourceMessage = "xxx content"),
+        )
+
+        descriptors.forEach { extension ->
+            assertEquals(engine.evaluate(extension).isBlocked, engine.isBlocked(extension))
+        }
+    }
+
+    private fun descriptor(
+        name: String = "Sample Reader",
+        adultFlag: Int = 0,
+        sourceName: String? = null,
+        sourceMessage: String? = null,
+    ) = ExtensionDescriptor(
+        name = name,
+        packageName = "org.example.sample",
+        apkPath = "sample.apk",
+        language = "en",
+        version = "1.0",
+        versionCode = 1,
+        repositoryUrl = "https://example.org",
+        adultFlag = adultFlag,
+        sources = if (sourceName != null || sourceMessage != null) {
+            listOf(
+                RepositorySourceDescriptor(
+                    id = "1",
+                    name = sourceName.orEmpty(),
+                    language = "en",
+                    homeUrl = null,
+                    message = sourceMessage,
+                ),
+            )
+        } else {
+            emptyList()
+        },
+    )
 }
