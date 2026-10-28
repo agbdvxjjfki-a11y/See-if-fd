@@ -34,6 +34,10 @@ class AutoFlipControllerTest {
 
             pageReady.set(true)
             assertTrue(reachedEnd.await(3, TimeUnit.SECONDS))
+            val stopDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1)
+            while (settings.enabled && System.nanoTime() < stopDeadline) {
+                Thread.sleep(10)
+            }
             assertFalse(settings.enabled)
         }
     }

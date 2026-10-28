@@ -5,6 +5,7 @@ class ReaderSettings(
 )
 
 class AutoFlipSettings {
+    @Volatile
     var enabled: Boolean = false
     var durationSeconds: Int = DEFAULT_DURATION_SECONDS
         set(value) {
