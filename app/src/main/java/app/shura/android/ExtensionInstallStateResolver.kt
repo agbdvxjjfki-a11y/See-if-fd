@@ -11,7 +11,7 @@ internal fun extensionOperationForInstalledPackage(
         installed == null -> ExtensionOperationPhase.NOT_INSTALLED
         installed.packageName != extension.packageName -> ExtensionOperationPhase.INCOMPATIBLE
         !installed.isMihonExtension -> ExtensionOperationPhase.INCOMPATIBLE
-        installed.isNsfw -> ExtensionOperationPhase.INCOMPATIBLE
+        installed.nsfwClassification != ApkNsfwClassification.SAFE -> ExtensionOperationPhase.INCOMPATIBLE
         extension.versionCode > installed.versionCode -> ExtensionOperationPhase.UPDATE_AVAILABLE
         else -> ExtensionOperationPhase.INSTALLED
     }
@@ -31,6 +31,7 @@ internal fun extensionInstallOutcome(
     if (status == PackageInstaller.STATUS_SUCCESS &&
         installed?.packageName == expectedPackage &&
         installed.isMihonExtension &&
+        installed.nsfwClassification == ApkNsfwClassification.SAFE &&
         installed.versionCode >= expectedVersionCode
     ) {
         return ExtensionOperationState(ExtensionOperationPhase.INSTALLED)
@@ -39,6 +40,14 @@ internal fun extensionInstallOutcome(
         return ExtensionOperationState(
             ExtensionOperationPhase.INCOMPATIBLE,
             message = "الحزمة المثبتة ليست إضافة Mihon معروفة",
+        )
+    }
+    if (installed?.packageName == expectedPackage &&
+        installed.nsfwClassification != ApkNsfwClassification.SAFE
+    ) {
+        return ExtensionOperationState(
+            ExtensionOperationPhase.INCOMPATIBLE,
+            message = "تعذر التحقق من تصنيف محتوى الحزمة المثبتة",
         )
     }
     val message = when (status) {

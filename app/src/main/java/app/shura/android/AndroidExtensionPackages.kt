@@ -19,7 +19,7 @@ data class InstalledExtensionPackage(
     val versionCode: Long,
     val isMihonExtension: Boolean,
     val signerSha256: Set<String>,
-    val isNsfw: Boolean = false,
+    val nsfwClassification: ApkNsfwClassification,
 )
 
 class AndroidExtensionPackages(private val context: Context) {
@@ -46,7 +46,7 @@ class AndroidExtensionPackages(private val context: Context) {
             versionName = info.versionName,
             isMihonExtension = info.isMihonExtensionPackage(),
             signerSha256 = signerCertificates.map(::sha256).toSet(),
-            isNsfw = info.isNsfwExtensionPackage(),
+            nsfwClassification = info.nsfwExtensionClassification(),
         )
     }
 
@@ -127,14 +127,21 @@ class AndroidExtensionPackages(private val context: Context) {
         versionCode = versionCodeLongCompat(),
         isMihonExtension = isMihonExtensionPackage(),
         signerSha256 = signatureBytes().map(::sha256).toSet(),
-        isNsfw = isNsfwExtensionPackage(),
+        nsfwClassification = nsfwExtensionClassification(),
     )
 
     private fun PackageInfo.isMihonExtensionPackage(): Boolean =
         reqFeatures.orEmpty().any { it.name == MIHON_EXTENSION_FEATURE }
 
-    private fun PackageInfo.isNsfwExtensionPackage(): Boolean =
-        applicationInfo?.metaData?.getInt(MIHON_EXTENSION_NSFW_METADATA, 0) != 0
+    @Suppress("DEPRECATION")
+    private fun PackageInfo.nsfwExtensionClassification(): ApkNsfwClassification {
+        val metadata = applicationInfo?.metaData ?: return ApkNsfwClassification.MISSING
+        val present = metadata.containsKey(MIHON_EXTENSION_NSFW_METADATA)
+        return classifyApkNsfwMetadata(
+            present = present,
+            value = if (present) metadata.get(MIHON_EXTENSION_NSFW_METADATA) else null,
+        )
+    }
 
     private fun PackageInfo.signatureBytes(): List<ByteArray> =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {

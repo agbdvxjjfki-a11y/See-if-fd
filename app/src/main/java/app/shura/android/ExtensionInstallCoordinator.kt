@@ -22,7 +22,7 @@ data class ApkArchiveMetadata(
     val versionName: String?,
     val isMihonExtension: Boolean,
     val signerSha256: Set<String>,
-    val isNsfw: Boolean = false,
+    val nsfwClassification: ApkNsfwClassification,
 )
 
 data class VerifiedExtensionApk(
@@ -195,8 +195,16 @@ class ExtensionInstallCoordinator(
             require(archive.isMihonExtension) {
                 "هذا APK لا يعلن بيانات إضافة Mihon المتوافقة"
             }
-            require(!archive.isNsfw) {
-                "رفض تثبيت APK مصنف كمحتوى للبالغين في بيانات الإضافة"
+            require(archive.nsfwClassification == ApkNsfwClassification.SAFE) {
+                when (archive.nsfwClassification) {
+                    ApkNsfwClassification.NSFW ->
+                        "رفض تثبيت APK مصنف كمحتوى للبالغين في بيانات الإضافة"
+                    ApkNsfwClassification.MISSING ->
+                        "رفض تثبيت APK لعدم احتوائه بيانات تصنيف المحتوى المطلوبة"
+                    ApkNsfwClassification.INVALID ->
+                        "رفض تثبيت APK لاحتواء بيانات تصنيف محتوى غير صالحة"
+                    ApkNsfwClassification.SAFE -> error("Unreachable safe APK classification")
+                }
             }
             require(archive.signerSha256.isNotEmpty()) { "تعذر التحقق من توقيع APK" }
             if (installedSignerSha256.isNotEmpty()) {

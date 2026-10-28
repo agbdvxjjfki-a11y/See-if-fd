@@ -32,6 +32,7 @@ class ExtensionInstallCoordinatorTest {
             versionName = descriptor.version,
             isMihonExtension = true,
             signerSha256 = setOf("trusted-signer"),
+            nsfwClassification = ApkNsfwClassification.SAFE,
         ))
 
         val result = coordinator.prepare(
@@ -100,7 +101,7 @@ class ExtensionInstallCoordinatorTest {
                 .prepare(descriptor.copy(apkSha256 = null), onProgress = {})
         }
         assertFailsWith<IllegalArgumentException> {
-            coordinator(bytes, archive().copy(isNsfw = true))
+            coordinator(bytes, archive().copy(nsfwClassification = ApkNsfwClassification.NSFW))
                 .prepare(descriptor.copy(apkSha256 = null), onProgress = {})
         }
         Unit
@@ -120,6 +121,46 @@ class ExtensionInstallCoordinatorTest {
         assertTrue(error.message.orEmpty().contains(descriptor.packageName))
         assertTrue(error.message.orEmpty().contains("versionCode=106000"))
         assertTrue(error.message.orEmpty().contains("versionCode=106001"))
+    }
+
+    @Test
+    fun rejectsAdultMissingAndInvalidApkClassificationAndDeletesTemporaryFile() = runBlocking {
+        val descriptor = extension()
+        val rejectedClassifications = listOf(
+            ApkNsfwClassification.NSFW,
+            ApkNsfwClassification.MISSING,
+            ApkNsfwClassification.INVALID,
+        )
+
+        rejectedClassifications.forEach { classification ->
+            assertFailsWith<IllegalArgumentException> {
+                coordinator(
+                    byteArrayOf(1, 2, 3),
+                    archive().copy(nsfwClassification = classification),
+                ).prepare(descriptor, onProgress = {})
+            }
+            assertEquals(0, temporaryFolder.root.listFiles().orEmpty().size)
+        }
+    }
+
+    @Test
+    fun successfulAndroidInstallVerificationRequiresKnownSafeApkClassification() {
+        val missingClassification = extensionInstallOutcome(
+            status = PackageInstaller.STATUS_SUCCESS,
+            expectedPackage = "org.example.extension",
+            expectedVersionCode = 7,
+            installed = InstalledExtensionPackage(
+                packageName = "org.example.extension",
+                versionName = "1.2",
+                versionCode = 7,
+                isMihonExtension = true,
+                signerSha256 = setOf("trusted-signer"),
+                nsfwClassification = ApkNsfwClassification.MISSING,
+            ),
+            systemMessage = null,
+        )
+
+        assertEquals(ExtensionOperationPhase.INCOMPATIBLE, missingClassification.phase)
     }
 
     @Test
@@ -205,6 +246,7 @@ class ExtensionInstallCoordinatorTest {
                 versionCode = 7,
                 isMihonExtension = true,
                 signerSha256 = setOf("trusted-signer"),
+                nsfwClassification = ApkNsfwClassification.SAFE,
             ),
             systemMessage = null,
         )
@@ -218,6 +260,7 @@ class ExtensionInstallCoordinatorTest {
                 versionCode = 7,
                 isMihonExtension = true,
                 signerSha256 = setOf("trusted-signer"),
+                nsfwClassification = ApkNsfwClassification.SAFE,
             ),
             systemMessage = null,
         )
@@ -246,6 +289,7 @@ class ExtensionInstallCoordinatorTest {
                 versionCode = descriptor.versionCode - 1,
                 isMihonExtension = true,
                 signerSha256 = setOf("trusted-signer"),
+                nsfwClassification = ApkNsfwClassification.SAFE,
             ),
         )
         val incompatible = extensionOperationForInstalledPackage(
@@ -256,6 +300,7 @@ class ExtensionInstallCoordinatorTest {
                 versionCode = descriptor.versionCode - 1,
                 isMihonExtension = false,
                 signerSha256 = emptySet(),
+                nsfwClassification = ApkNsfwClassification.SAFE,
             ),
         )
         val adult = extensionOperationForInstalledPackage(
@@ -266,7 +311,7 @@ class ExtensionInstallCoordinatorTest {
                 versionCode = descriptor.versionCode,
                 isMihonExtension = true,
                 signerSha256 = setOf("trusted-signer"),
-                isNsfw = true,
+                nsfwClassification = ApkNsfwClassification.NSFW,
             ),
         )
         val wrongPackage = extensionOperationForInstalledPackage(
@@ -277,6 +322,7 @@ class ExtensionInstallCoordinatorTest {
                 versionCode = descriptor.versionCode,
                 isMihonExtension = true,
                 signerSha256 = setOf("trusted-signer"),
+                nsfwClassification = ApkNsfwClassification.SAFE,
             ),
         )
         val newerInstalled = extensionOperationForInstalledPackage(
@@ -287,6 +333,7 @@ class ExtensionInstallCoordinatorTest {
                 versionCode = descriptor.versionCode + 1,
                 isMihonExtension = true,
                 signerSha256 = setOf("trusted-signer"),
+                nsfwClassification = ApkNsfwClassification.SAFE,
             ),
         )
 
@@ -319,6 +366,7 @@ class ExtensionInstallCoordinatorTest {
         versionName = "1.2",
         isMihonExtension = isMihonExtension,
         signerSha256 = setOf(signer),
+        nsfwClassification = ApkNsfwClassification.SAFE,
     )
 
     private fun extension(name: String = "Safe Reader") = ExtensionDescriptor(
