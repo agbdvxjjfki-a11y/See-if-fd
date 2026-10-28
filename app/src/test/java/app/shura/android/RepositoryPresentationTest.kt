@@ -13,8 +13,50 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import androidx.compose.ui.unit.LayoutDirection
 
 class RepositoryPresentationTest {
+    @Test
+    fun librarySearchSortsTitlesAndCanRestrictResultsToSavedFavorites() {
+        val titles = listOf("Zeta", "Summer Romance", "Alpha")
+        val favorites = setOf("Summer Romance", "Zeta")
+
+        assertEquals(
+            listOf("Alpha", "Summer Romance", "Zeta"),
+            filterLibraryTitles(titles, favorites, query = "", favoritesOnly = false),
+        )
+        assertEquals(
+            listOf("Summer Romance"),
+            filterLibraryTitles(titles, favorites, query = "romance", favoritesOnly = true),
+        )
+        assertEquals(
+            listOf("Alpha"),
+            filterLibraryTitles(titles, favorites, query = "alpha", favoritesOnly = false),
+        )
+    }
+
+    @Test
+    fun primaryNavigationKeepsRepositoryManagementOutOfHomeAndLibrary() {
+        assertEquals(
+            listOf(Destination.HOME, Destination.LIBRARY, Destination.EXPLORE, Destination.DOWNLOADS, Destination.SETTINGS),
+            PRIMARY_DESTINATIONS,
+        )
+        assertTrue(Destination.REPOSITORIES !in PRIMARY_DESTINATIONS)
+        assertTrue(Destination.EXTENSIONS !in PRIMARY_DESTINATIONS)
+    }
+
+    @Test
+    fun arabicAndEnglishResourcesHaveMatchingKeysAndRtlDirection() {
+        val arabic = File("src/main/res/values/strings.xml").readText()
+        val english = File("src/main/res/values-en/strings.xml").readText()
+        val keyPattern = Regex("<string\\s+name=\"([^\"]+)\"")
+
+        assertEquals(keyPattern.findAll(arabic).map { it.groupValues[1] }.toSet(),
+            keyPattern.findAll(english).map { it.groupValues[1] }.toSet())
+        assertEquals(LayoutDirection.Rtl, appLayoutDirection("ar"))
+        assertEquals(LayoutDirection.Ltr, appLayoutDirection("en"))
+    }
+
     @Test
     fun extensionCatalogFeedsAllParsedRepositoryEntriesToPresentation() {
         val first = extension("org.example.one", "English reader", "en")
@@ -85,6 +127,24 @@ class RepositoryPresentationTest {
         assertEquals(listOf(allowed), state.searchExtensions("romance"))
         assertNull(state.findExtension(blocked.packageName))
         assertEquals(allowed, state.findExtension(allowed.packageName))
+    }
+
+    @Test
+    fun preparedCatalogAndPackageIndexesAreUsedForDetailAndInstallLookups() {
+        val allowed = extension("org.example.safe", "Summer Romance", "en")
+        val state = ShuraUiState(
+            repositories = emptyList(),
+            preparedExtensionCatalog = listOf(allowed),
+            extensionByPackage = mapOf(allowed.packageName to allowed),
+            extensionByRepositoryAndPackage = mapOf(
+                (allowed.repositoryUrl to allowed.packageName) to allowed,
+            ),
+        )
+
+        assertEquals(listOf(allowed), state.extensionCatalog())
+        assertEquals(allowed, state.findExtension(allowed.packageName))
+        assertEquals(allowed, state.findExtension(allowed.packageName, allowed.repositoryUrl))
+        assertNull(state.findExtension(allowed.packageName, "https://other.example/repo"))
     }
 
     @Test

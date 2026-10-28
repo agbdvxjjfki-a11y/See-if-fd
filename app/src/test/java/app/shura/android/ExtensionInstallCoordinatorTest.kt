@@ -103,6 +103,22 @@ class ExtensionInstallCoordinatorTest {
     }
 
     @Test
+    fun versionMismatchErrorIdentifiesCatalogAndActualApkValues(): Unit = runBlocking {
+        val descriptor = extension().copy(name = "Comic Fury", version = "1.6.0", versionCode = 106_000)
+        val error = assertFailsWith<IllegalArgumentException> {
+            coordinator(
+                byteArrayOf(1, 2, 3),
+                archive(versionCode = 106_001).copy(versionName = "1.6.1"),
+            ).prepare(descriptor, onProgress = {})
+        }
+
+        assertTrue(error.message.orEmpty().contains("Comic Fury"))
+        assertTrue(error.message.orEmpty().contains(descriptor.packageName))
+        assertTrue(error.message.orEmpty().contains("versionCode=106000"))
+        assertTrue(error.message.orEmpty().contains("versionCode=106001"))
+    }
+
+    @Test
     fun rejectsFailedAndTruncatedDownloadsAndDeletesPartialFiles() = runBlocking {
         val errorDownloader = HttpsApkDownloader(HttpConnectionOpener {
             FakeHttpConnection(it.toURL(), 503, byteArrayOf())
@@ -142,6 +158,35 @@ class ExtensionInstallCoordinatorTest {
             downloader.download("https://example.org/file.apk", destination, onProgress = {})
         }
         assertTrue(!destination.exists())
+    }
+
+    @Test
+    fun followsHttpsApkRedirectAndDownloadsFromTheFinalHost() = runBlocking {
+        val requests = mutableListOf<String>()
+        val apkBytes = byteArrayOf(4, 3, 2, 1)
+        val downloader = HttpsApkDownloader(HttpConnectionOpener { uri ->
+            requests += uri.toString()
+            if (uri.host == "github.example") {
+                FakeHttpConnection(uri.toURL(), 302, byteArrayOf(), location = "https://cdn.example/extension.apk")
+            } else {
+                FakeHttpConnection(uri.toURL(), 200, apkBytes)
+            }
+        })
+        val destination = File(temporaryFolder.root, "redirected.apk")
+
+        assertEquals(
+            apkBytes.size.toLong(),
+            downloader.download("https://github.example/releases/extension.apk", destination, onProgress = {}),
+        )
+
+        assertEquals(
+            listOf(
+                "https://github.example/releases/extension.apk",
+                "https://cdn.example/extension.apk",
+            ),
+            requests,
+        )
+        assertTrue(destination.readBytes().contentEquals(apkBytes))
     }
 
     @Test

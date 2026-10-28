@@ -22,6 +22,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
@@ -35,9 +36,11 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -64,6 +67,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.Shapes
+import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
@@ -91,9 +96,20 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Icon
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.shura.core.reader.AutoFlipController
@@ -103,6 +119,7 @@ import app.shura.core.repository.RepositoryCatalogSnapshot
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.IOException
@@ -110,14 +127,46 @@ import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URISyntaxException
 
-private enum class Destination {
+internal enum class Destination {
     HOME,
     LIBRARY,
+    EXPLORE,
     REPOSITORIES,
     EXTENSIONS,
     DOWNLOADS,
     READER,
     SETTINGS,
+}
+
+internal val PRIMARY_DESTINATIONS = listOf(
+    Destination.HOME,
+    Destination.LIBRARY,
+    Destination.EXPLORE,
+    Destination.DOWNLOADS,
+    Destination.SETTINGS,
+)
+
+internal fun appLayoutDirection(language: String): LayoutDirection =
+    if (language == "ar") LayoutDirection.Rtl else LayoutDirection.Ltr
+
+private data class ExtensionCatalogPresentation(
+    val extensions: List<ExtensionDescriptor>,
+    val languages: List<String>,
+    val byRepositoryAndPackage: Map<Pair<String, String>, ExtensionDescriptor>,
+)
+
+internal fun filterLibraryTitles(
+    titles: List<String>,
+    favoriteTitles: Set<String>,
+    query: String,
+    favoritesOnly: Boolean,
+): List<String> {
+    val normalizedQuery = query.trim()
+    return titles.asSequence()
+        .filter { !favoritesOnly || it in favoriteTitles }
+        .filter { normalizedQuery.isEmpty() || it.contains(normalizedQuery, ignoreCase = true) }
+        .sortedBy(String::lowercase)
+        .toList()
 }
 
 class MainActivity : AppCompatActivity() {
@@ -147,13 +196,9 @@ class MainActivity : AppCompatActivity() {
                     androidx.core.os.LocaleListCompat.forLanguageTags(state.language),
                 )
             }
-            ShuraTheme(darkTheme = state.darkTheme) {
+            ShuraTheme(themeMode = state.themeMode) {
                 CompositionLocalProvider(
-                    LocalLayoutDirection provides if (state.language == "ar") {
-                        LayoutDirection.Rtl
-                    } else {
-                        LayoutDirection.Ltr
-                    },
+                    LocalLayoutDirection provides appLayoutDirection(state.language),
                 ) {
                     ShuraApp(
                         viewModel = viewModel,
@@ -200,21 +245,61 @@ class MainActivity : AppCompatActivity() {
 }
 
 @Composable
-private fun ShuraTheme(darkTheme: Boolean, content: @Composable () -> Unit) {
+private fun ShuraTheme(themeMode: ThemeMode, content: @Composable () -> Unit) {
+    val darkTheme = when (themeMode) {
+        ThemeMode.SYSTEM -> isSystemInDarkTheme()
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
+    }
     val colors = if (darkTheme) {
         darkColorScheme(
-            primary = Color(0xFFD0BCFF),
-            secondary = Color(0xFFCCC2DC),
-            tertiary = Color(0xFFEFB8C8),
+            primary = Color(0xFFD8B8F2),
+            onPrimary = Color(0xFF32164B),
+            primaryContainer = Color(0xFF4A3062),
+            onPrimaryContainer = Color(0xFFF0DDFE),
+            secondary = Color(0xFF9CD2C5),
+            onSecondary = Color(0xFF12372F),
+            secondaryContainer = Color(0xFF244B42),
+            onSecondaryContainer = Color(0xFFC0EBDD),
+            tertiary = Color(0xFFFFB8A7),
+            background = Color(0xFF151219),
+            surface = Color(0xFF1D1921),
+            surfaceVariant = Color(0xFF302A35),
         )
     } else {
         lightColorScheme(
-            primary = Color(0xFF5B4191),
-            secondary = Color(0xFF625B71),
-            tertiary = Color(0xFF7D5260),
+            primary = Color(0xFF593A73),
+            onPrimary = Color.White,
+            primaryContainer = Color(0xFFEEDCFA),
+            onPrimaryContainer = Color(0xFF241333),
+            secondary = Color(0xFF356D62),
+            onSecondary = Color.White,
+            secondaryContainer = Color(0xFFD6EEE7),
+            onSecondaryContainer = Color(0xFF102F29),
+            tertiary = Color(0xFF9A4F43),
+            background = Color(0xFFFAF7FC),
+            surface = Color(0xFFFFFBFF),
+            surfaceVariant = Color(0xFFF0EAF3),
         )
     }
-    MaterialTheme(colorScheme = colors, content = content)
+    val typography = Typography(
+        headlineLarge = TextStyle(fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Bold, letterSpacing = (-0.4).sp),
+        headlineMedium = TextStyle(fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Bold, letterSpacing = (-0.2).sp),
+        titleLarge = TextStyle(fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.SemiBold),
+        titleMedium = TextStyle(fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Medium),
+        bodyLarge = TextStyle(fontFamily = FontFamily.SansSerif, lineHeight = 26.sp),
+        bodyMedium = TextStyle(fontFamily = FontFamily.SansSerif, lineHeight = 22.sp),
+    )
+    MaterialTheme(
+        colorScheme = colors,
+        typography = typography,
+        shapes = Shapes(
+            small = RoundedCornerShape(12.dp),
+            medium = RoundedCornerShape(18.dp),
+            large = RoundedCornerShape(26.dp),
+        ),
+        content = content,
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -230,10 +315,17 @@ private fun ShuraApp(
     val context = LocalContext.current
 
     LaunchedEffect(state.repositoryMessage) {
-        if (state.repositoryMessage == "repository_added") {
+        if (state.repositoryMessage == "repository_added" ||
+            state.repositoryMessage == "repository_updated"
+        ) {
+            val message = if (state.repositoryMessage == "repository_updated") {
+                R.string.repository_updated
+            } else {
+                R.string.repository_added
+            }
             snackbarHostState.showSnackbar(
                 context.getString(
-                    R.string.repository_added,
+                    message,
                     state.repositorySuccessName ?: context.getString(R.string.repositories_title),
                     state.repositorySuccessCount ?: 0,
                 ),
@@ -252,15 +344,23 @@ private fun ShuraApp(
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        text = stringResource(destination.titleResource()),
-                        fontWeight = FontWeight.SemiBold,
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                        Text(
+                            text = stringResource(R.string.app_name),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Text(
+                            text = stringResource(destination.titleResource()),
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
                 },
                 navigationIcon = {
                     if (destination == Destination.READER) {
                         TextButton(onClick = { destination = Destination.HOME }) {
-                            Text("‹")
+                            Text(stringResource(R.string.nav_home))
                         }
                     }
                 },
@@ -269,28 +369,23 @@ private fun ShuraApp(
         bottomBar = {
             if (destination != Destination.READER) {
                 NavigationBar {
-                    listOf(
-                        Destination.HOME,
-                        Destination.LIBRARY,
-                        Destination.REPOSITORIES,
-                        Destination.EXTENSIONS,
-                        Destination.DOWNLOADS,
-                        Destination.SETTINGS,
-                    ).forEach { item ->
+                    PRIMARY_DESTINATIONS.forEach { item ->
                         NavigationBarItem(
                             selected = destination == item,
                             onClick = { destination = item },
                             icon = {
-                                Text(
-                                    text = when (item) {
-                                        Destination.HOME -> "⌂"
-                                        Destination.LIBRARY -> "▤"
-                                        Destination.REPOSITORIES -> "↻"
-                                        Destination.EXTENSIONS -> "◇"
-                                        Destination.DOWNLOADS -> "↓"
-                                        Destination.SETTINGS -> "⚙"
-                                        Destination.READER -> "▣"
+                                Icon(
+                                    imageVector = when (item) {
+                                        Destination.HOME -> Icons.Filled.Home
+                                        Destination.LIBRARY -> Icons.AutoMirrored.Filled.List
+                                        Destination.EXPLORE -> Icons.Filled.Search
+                                        Destination.DOWNLOADS -> Icons.Filled.KeyboardArrowDown
+                                        Destination.SETTINGS -> Icons.Filled.Settings
+                                        Destination.REPOSITORIES,
+                                        Destination.EXTENSIONS,
+                                        Destination.READER -> Icons.Filled.Home
                                     },
+                                    contentDescription = null,
                                 )
                             },
                             label = { Text(stringResource(item.titleResource())) },
@@ -307,6 +402,7 @@ private fun ShuraApp(
                 onNavigate = { destination = it },
             )
             Destination.LIBRARY -> LibraryScreen(viewModel, state, padding)
+            Destination.EXPLORE -> ExploreScreen(padding) { destination = it }
             Destination.REPOSITORIES -> RepositoriesScreen(viewModel, state, padding)
             Destination.EXTENSIONS -> ExtensionsScreen(
                 viewModel,
@@ -317,7 +413,12 @@ private fun ShuraApp(
             )
             Destination.DOWNLOADS -> DownloadsScreen(viewModel, state, padding)
             Destination.READER -> ReaderScreen(viewModel, state, padding)
-            Destination.SETTINGS -> SettingsScreen(viewModel, state, padding)
+            Destination.SETTINGS -> SettingsScreen(
+                viewModel,
+                state,
+                padding,
+                onNavigate = { destination = it },
+            )
         }
     }
 }
@@ -325,6 +426,7 @@ private fun ShuraApp(
 private fun Destination.titleResource(): Int = when (this) {
     Destination.HOME -> R.string.nav_home
     Destination.LIBRARY -> R.string.nav_library
+    Destination.EXPLORE -> R.string.nav_explore
     Destination.REPOSITORIES -> R.string.nav_repositories
     Destination.EXTENSIONS -> R.string.nav_extensions
     Destination.DOWNLOADS -> R.string.nav_downloads
@@ -346,41 +448,149 @@ private fun HomeScreen(
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text(
-            stringResource(R.string.home_greeting),
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold,
-        )
-        Text(
-            stringResource(R.string.home_subtitle),
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        HomeCard(
-            title = stringResource(R.string.home_library_title),
-            body = stringResource(R.string.home_library_body),
-            count = state.libraryTitles.size.toString(),
-            onClick = { onNavigate(Destination.LIBRARY) },
-        )
-        HomeCard(
-            title = stringResource(R.string.home_repositories_title),
-            body = stringResource(R.string.home_repositories_body),
-            count = state.repositories.size.toString(),
-            onClick = { onNavigate(Destination.REPOSITORIES) },
-        )
-        HomeCard(
-            title = stringResource(R.string.home_reader_title),
-            body = stringResource(R.string.home_reader_body),
-            count = null,
-            onClick = { onNavigate(Destination.READER) },
-        )
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = MaterialTheme.shapes.extraLarge,
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+        ) {
+            Row(
+                Modifier.fillMaxWidth().padding(22.dp),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier.size(52.dp).clip(RoundedCornerShape(18.dp))
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        stringResource(R.string.brand_mark),
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                Column(
+                    Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        stringResource(R.string.home_greeting),
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                    Text(
+                        stringResource(R.string.home_subtitle),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                    Button(onClick = { onNavigate(Destination.READER) }) {
+                        Text(stringResource(R.string.home_reader_title))
+                    }
+                }
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            HomeCard(
+                title = stringResource(R.string.home_library_title),
+                body = stringResource(R.string.home_library_body),
+                count = state.libraryTitles.size.toString(),
+                onClick = { onNavigate(Destination.LIBRARY) },
+                modifier = Modifier.weight(1f),
+            )
+            HomeCard(
+                title = stringResource(R.string.nav_explore),
+                body = stringResource(R.string.explore_unavailable_body),
+                count = null,
+                onClick = { onNavigate(Destination.EXPLORE) },
+                modifier = Modifier.weight(1f),
+            )
+        }
+        if (state.libraryTitles.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(stringResource(R.string.home_recent_library), style = MaterialTheme.typography.titleLarge)
+                TextButton(onClick = { onNavigate(Destination.LIBRARY) }) {
+                    Text(stringResource(R.string.home_library_title))
+                }
+            }
+            state.libraryTitles.takeLast(4).asReversed().forEach { title ->
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                ) {
+                    Text(title, Modifier.fillMaxWidth().padding(16.dp), style = MaterialTheme.typography.titleMedium)
+                }
+            }
+        }
     }
 }
 
 @Composable
-private fun HomeCard(title: String, body: String, count: String?, onClick: () -> Unit) {
+private fun ExploreScreen(
+    padding: PaddingValues,
+    onNavigate: (Destination) -> Unit,
+) {
+    Column(
+        Modifier.fillMaxSize().padding(padding).padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Card(
+            modifier = Modifier.fillMaxWidth().weight(1f),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        ) {
+            Column(
+                Modifier.fillMaxWidth().padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+                horizontalAlignment = Alignment.Start,
+            ) {
+                Box(
+                    Modifier.size(52.dp).clip(RoundedCornerShape(18.dp))
+                        .background(MaterialTheme.colorScheme.secondaryContainer),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Search,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                }
+                Text(
+                    stringResource(R.string.explore_unavailable_title),
+                    style = MaterialTheme.typography.headlineSmall,
+                )
+                Text(
+                    stringResource(R.string.explore_unavailable_body),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+                OutlinedButton(
+                    onClick = { onNavigate(Destination.SETTINGS) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(stringResource(R.string.explore_open_settings))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeCard(
+    title: String,
+    body: String,
+    count: String?,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier,
         onClick = onClick,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
     ) {
@@ -403,19 +613,53 @@ private fun HomeCard(title: String, body: String, count: String?, onClick: () ->
 @Composable
 private fun LibraryScreen(viewModel: ShuraViewModel, state: ShuraUiState, padding: PaddingValues) {
     var showAddDialog by rememberSaveable { mutableStateOf(false) }
+    var query by rememberSaveable { mutableStateOf("") }
+    var favoritesOnly by rememberSaveable { mutableStateOf(false) }
+    val visibleTitles = remember(state.libraryTitles, state.favoriteTitles, query, favoritesOnly) {
+        filterLibraryTitles(state.libraryTitles, state.favoriteTitles, query, favoritesOnly)
+    }
     Column(
         modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp),
     ) {
-        Button(
-            onClick = { showAddDialog = true },
-            modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(stringResource(R.string.library_add))
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(stringResource(R.string.library_title), style = MaterialTheme.typography.titleLarge)
+                Text(
+                    stringResource(R.string.library_count, state.libraryTitles.size),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Button(onClick = { showAddDialog = true }) {
+                Text(stringResource(R.string.library_add))
+            }
         }
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+            label = { Text(stringResource(R.string.library_search)) },
+            singleLine = true,
+        )
+        FilterChip(
+            selected = favoritesOnly,
+            onClick = { favoritesOnly = !favoritesOnly },
+            label = { Text(stringResource(R.string.library_favorites_filter)) },
+        )
         if (state.libraryTitles.isEmpty()) {
             EmptyState(
                 title = stringResource(R.string.library_empty_title),
                 body = stringResource(R.string.library_empty_body),
+                modifier = Modifier.weight(1f),
+            )
+        } else if (visibleTitles.isEmpty()) {
+            EmptyState(
+                title = stringResource(R.string.library_no_matches),
+                body = stringResource(R.string.library_search_help),
                 modifier = Modifier.weight(1f),
             )
         } else {
@@ -424,14 +668,32 @@ private fun LibraryScreen(viewModel: ShuraViewModel, state: ShuraUiState, paddin
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 contentPadding = PaddingValues(bottom = 16.dp),
             ) {
-                items(state.libraryTitles, key = { it }) { title ->
-                    Card(Modifier.fillMaxWidth()) {
+                items(visibleTitles, key = { it }) { title ->
+                    Card(
+                        Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    ) {
                         Row(
                             Modifier.fillMaxWidth().padding(16.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Text(title, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(title, style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    stringResource(R.string.library_user_entry),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            TextButton(onClick = { viewModel.toggleFavorite(title) }) {
+                                Text(
+                                    stringResource(
+                                        if (title in state.favoriteTitles) R.string.library_unfavorite
+                                        else R.string.library_favorite
+                                    ),
+                                )
+                            }
                             TextButton(onClick = { viewModel.removeLibraryTitle(title) }) {
                                 Text(stringResource(R.string.library_remove))
                             }
@@ -480,13 +742,25 @@ private fun AddLibraryTitleDialog(onDismiss: () -> Unit, onSave: (String) -> Uni
 @Composable
 private fun RepositoriesScreen(viewModel: ShuraViewModel, state: ShuraUiState, padding: PaddingValues) {
     var repositoryUrl by rememberSaveable { mutableStateOf("") }
+    var editingRepositoryUrl by rememberSaveable { mutableStateOf<String?>(null) }
     val validation = state.repositoryValidation?.takeIf {
         state.repositoryValidatedInput == repositoryUrl.trim()
     }
     val alreadyAdded = validation?.let { candidate ->
-        state.repositories.any { it.repository.normalized == candidate.repository.normalized }
+        state.repositories.any {
+            it.repository.normalized == candidate.repository.normalized &&
+                it.repository.normalized != editingRepositoryUrl
+        }
     } == true
     Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp)) {
+        editingRepositoryUrl?.let {
+            Text(
+                stringResource(R.string.repository_editing),
+                modifier = Modifier.padding(top = 8.dp),
+                color = MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.titleSmall,
+            )
+        }
         OutlinedTextField(
             value = repositoryUrl,
             onValueChange = {
@@ -516,11 +790,44 @@ private fun RepositoriesScreen(viewModel: ShuraViewModel, state: ShuraUiState, p
                 Text(stringResource(R.string.repository_test))
             }
             Button(
-                onClick = { viewModel.addRepository(repositoryUrl) },
+                onClick = {
+                    val oldUrl = editingRepositoryUrl
+                    if (oldUrl == null) {
+                        viewModel.addRepository(repositoryUrl)
+                    } else if (validation?.repository?.normalized == oldUrl) {
+                        viewModel.refreshRepository(oldUrl)
+                        editingRepositoryUrl = null
+                        repositoryUrl = ""
+                    } else {
+                        viewModel.replaceRepository(oldUrl, repositoryUrl)
+                        editingRepositoryUrl = null
+                        repositoryUrl = ""
+                    }
+                },
                 enabled = validation != null && !alreadyAdded && !state.repositoryOperation,
                 modifier = Modifier.weight(1f),
             ) {
-                Text(stringResource(if (alreadyAdded) R.string.repository_added_already else R.string.repository_add))
+                Text(
+                    stringResource(
+                        when {
+                            alreadyAdded -> R.string.repository_added_already
+                            editingRepositoryUrl != null -> R.string.repository_save_edit
+                            else -> R.string.repository_add
+                        },
+                    ),
+                )
+            }
+        }
+        if (editingRepositoryUrl != null) {
+            TextButton(
+                onClick = {
+                    editingRepositoryUrl = null
+                    repositoryUrl = ""
+                    viewModel.clearRepositoryValidation()
+                },
+                enabled = !state.repositoryOperation,
+            ) {
+                Text(stringResource(R.string.action_cancel))
             }
         }
         Text(
@@ -598,6 +905,11 @@ private fun RepositoriesScreen(viewModel: ShuraViewModel, state: ShuraUiState, p
                         snapshot = repository,
                         state = state,
                         viewModel = viewModel,
+                        onEdit = {
+                            editingRepositoryUrl = repository.repository.normalized
+                            repositoryUrl = repository.repository.inputUrl
+                            viewModel.clearRepositoryValidation()
+                        },
                     )
                 }
             }
@@ -618,6 +930,7 @@ private fun RepositoryCard(
     snapshot: RepositoryCatalogSnapshot,
     state: ShuraUiState,
     viewModel: ShuraViewModel,
+    onEdit: () -> Unit,
 ) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -656,6 +969,12 @@ private fun RepositoryCard(
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
+                    onClick = onEdit,
+                    enabled = !state.repositoryOperation,
+                ) {
+                    Text(stringResource(R.string.repository_edit))
+                }
+                OutlinedButton(
                     onClick = { viewModel.refreshRepository(snapshot.repository.normalized) },
                     enabled = !state.repositoryOperation,
                 ) {
@@ -684,11 +1003,50 @@ private fun ExtensionsScreen(
     var selectedLanguage by rememberSaveable { mutableStateOf<String?>(null) }
     var sortByLatest by rememberSaveable { mutableStateOf(false) }
     var selectedExtension by remember { mutableStateOf<ExtensionDescriptor?>(null) }
-    val allExtensions = state.extensionCatalog()
-    val languages = allExtensions.map { it.language }.filter(String::isNotBlank).distinct().sorted()
-    val extensions = state.searchExtensions(query, selectedLanguage).let { matches ->
-        if (sortByLatest) matches.sortedByDescending { it.versionCode }
-        else matches.sortedBy { it.name.lowercase() }
+    val catalogPresentation by androidx.compose.runtime.produceState(
+        initialValue = ExtensionCatalogPresentation(emptyList(), emptyList(), emptyMap()),
+        key1 = state.preparedExtensionCatalog,
+    ) {
+        value = withContext(Dispatchers.Default) {
+            val catalog = state.extensionCatalog()
+            ExtensionCatalogPresentation(
+                extensions = catalog,
+                languages = catalog.asSequence()
+                    .map { it.language }
+                    .filter(String::isNotBlank)
+                    .distinct()
+                    .sorted()
+                    .toList(),
+                byRepositoryAndPackage = state.extensionByRepositoryAndPackage
+                    .ifEmpty { catalog.associateBy { it.repositoryUrl to it.packageName } },
+            )
+        }
+    }
+    val allExtensions = catalogPresentation.extensions
+    val languages = catalogPresentation.languages
+    val extensions by androidx.compose.runtime.produceState(
+        initialValue = emptyList<ExtensionDescriptor>(),
+        key1 = allExtensions,
+        key2 = query,
+        key3 = selectedLanguage to sortByLatest,
+    ) {
+        delay(180)
+        value = withContext(Dispatchers.Default) {
+            val normalizedQuery = query.trim()
+            allExtensions.asSequence()
+                .filter { selectedLanguage == null || it.language.equals(selectedLanguage, ignoreCase = true) }
+                .filter { extension ->
+                    normalizedQuery.isEmpty() ||
+                        extension.name.contains(normalizedQuery, ignoreCase = true) ||
+                        extension.packageName.contains(normalizedQuery, ignoreCase = true) ||
+                        extension.language.contains(normalizedQuery, ignoreCase = true)
+                }
+                .let { matches ->
+                    if (sortByLatest) matches.sortedByDescending { it.versionCode }
+                    else matches.sortedBy { it.name.lowercase() }
+                }
+                .toList()
+        }
     }
     Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp)) {
         OutlinedTextField(
@@ -726,6 +1084,12 @@ private fun ExtensionsScreen(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        Text(
+            stringResource(R.string.repository_extension_count, extensions.size),
+            modifier = Modifier.padding(bottom = 6.dp),
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+        )
         if (extensions.isEmpty()) {
             EmptyState(
                 title = stringResource(R.string.extensions_empty),
@@ -739,7 +1103,11 @@ private fun ExtensionsScreen(
                 contentPadding = PaddingValues(bottom = 16.dp),
             ) {
                 items(extensions, key = { "${it.repositoryUrl}:${it.packageName}" }) { extension ->
-                    ExtensionCard(extension, state.extensionOperations[extension.packageName]) {
+                    ExtensionCard(
+                        extension = extension,
+                        operation = state.extensionOperations[extension.packageName],
+                        dataSaver = state.dataSaver,
+                    ) {
                         selectedExtension = extension
                     }
                 }
@@ -747,7 +1115,9 @@ private fun ExtensionsScreen(
         }
     }
     selectedExtension?.let { extension ->
-        val stillVisible = state.findExtension(extension.packageName, extension.repositoryUrl)
+        val stillVisible = catalogPresentation.byRepositoryAndPackage[
+            extension.repositoryUrl to extension.packageName
+        ]
         if (stillVisible != null) {
             ExtensionDetailsDialog(
                 extension = stillVisible,
@@ -793,6 +1163,7 @@ private fun LanguageFilterRow(
 private fun ExtensionCard(
     extension: ExtensionDescriptor,
     operation: ExtensionOperationState?,
+    dataSaver: Boolean,
     onClick: () -> Unit,
 ) {
     Card(
@@ -805,7 +1176,7 @@ private fun ExtensionCard(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            ExtensionIcon(extension)
+            ExtensionIcon(extension, enabled = !dataSaver)
             Column(
                 Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -839,13 +1210,14 @@ private fun ExtensionCard(
 }
 
 @Composable
-private fun ExtensionIcon(extension: ExtensionDescriptor) {
+private fun ExtensionIcon(extension: ExtensionDescriptor, enabled: Boolean) {
     val iconUrl = extension.iconUrl
     val bitmap by androidx.compose.runtime.produceState<Bitmap?>(
         initialValue = null,
         key1 = iconUrl,
+        key2 = enabled,
     ) {
-        value = iconUrl?.let { url ->
+        value = iconUrl?.takeIf { enabled }?.let { url ->
             withContext(Dispatchers.IO) {
                 loadExtensionIcon(url)
             }
@@ -1032,64 +1404,86 @@ private fun ExtensionDetailsDialog(
 
 @Composable
 private fun DownloadsScreen(viewModel: ShuraViewModel, state: ShuraUiState, padding: PaddingValues) {
-    val operations = state.extensionCatalog().distinctBy { it.packageName }.mapNotNull { extension ->
-        state.extensionOperations[extension.packageName]?.let { operation -> extension to operation }
-            ?.takeIf { (_, operation) ->
-                operation.phase in setOf(
-                    ExtensionOperationPhase.DOWNLOADING,
-                    ExtensionOperationPhase.VERIFYING,
-                    ExtensionOperationPhase.NEED_INSTALL_PERMISSION,
-                    ExtensionOperationPhase.AWAITING_ANDROID,
-                    ExtensionOperationPhase.REMOVAL_PENDING,
-                    ExtensionOperationPhase.FAILED,
-                )
-            }
+    val allExtensions by androidx.compose.runtime.produceState(
+        initialValue = emptyList<ExtensionDescriptor>(),
+        key1 = state.preparedExtensionCatalog,
+    ) {
+        value = withContext(Dispatchers.Default) { state.extensionCatalog() }
     }
-    if (operations.isEmpty()) {
-        EmptyState(
-            title = stringResource(R.string.downloads_empty_title),
-            body = stringResource(R.string.downloads_unavailable_body),
-            modifier = Modifier.fillMaxSize().padding(padding),
+    val operations by androidx.compose.runtime.produceState(
+        initialValue = emptyList<Pair<ExtensionDescriptor, ExtensionOperationState>>(),
+        key1 = allExtensions,
+        key2 = state.extensionOperations,
+    ) {
+        value = withContext(Dispatchers.Default) {
+            allExtensions.distinctBy { it.packageName }.mapNotNull { extension ->
+                state.extensionOperations[extension.packageName]?.let { operation -> extension to operation }
+                    ?.takeIf { (_, operation) ->
+                        operation.phase in setOf(
+                            ExtensionOperationPhase.DOWNLOADING,
+                            ExtensionOperationPhase.VERIFYING,
+                            ExtensionOperationPhase.NEED_INSTALL_PERMISSION,
+                            ExtensionOperationPhase.AWAITING_ANDROID,
+                            ExtensionOperationPhase.REMOVAL_PENDING,
+                            ExtensionOperationPhase.FAILED,
+                        )
+                    }
+                }
+            }
+        }
+    Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp)) {
+        Text(
+            stringResource(R.string.downloads_scope_note),
+            modifier = Modifier.padding(top = 12.dp, bottom = 8.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-    } else {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            contentPadding = PaddingValues(vertical = 12.dp),
-        ) {
-            items(operations, key = { it.first.packageName }) { (extension, operation) ->
-                Card(Modifier.fillMaxWidth()) {
-                    Column(
-                        Modifier.fillMaxWidth().padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Text(extension.name, style = MaterialTheme.typography.titleMedium)
-                        Text(stringResource(operation.phaseResource()))
-                        operation.message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                        if (operation.phase == ExtensionOperationPhase.DOWNLOADING) {
-                            LinearProgressIndicator(Modifier.fillMaxWidth())
-                            Text(
-                                stringResource(
-                                    R.string.extension_download_progress,
-                                    formatBytes(operation.downloadedBytes),
-                                    formatBytes(operation.totalBytes ?: operation.downloadedBytes),
-                                ),
-                            )
-                        }
-                        if (operation.phase == ExtensionOperationPhase.DOWNLOADING ||
-                            operation.phase == ExtensionOperationPhase.NEED_INSTALL_PERMISSION
+        if (operations.isEmpty()) {
+            EmptyState(
+                title = stringResource(R.string.downloads_empty_title),
+                body = stringResource(R.string.downloads_unavailable_body),
+                modifier = Modifier.weight(1f),
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(vertical = 12.dp),
+            ) {
+                items(operations, key = { it.first.packageName }) { (extension, operation) ->
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(
+                            Modifier.fillMaxWidth().padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            TextButton(onClick = { viewModel.cancelExtensionInstall(extension.packageName) }) {
-                                Text(stringResource(R.string.action_cancel))
+                            Text(extension.name, style = MaterialTheme.typography.titleMedium)
+                            Text(stringResource(operation.phaseResource()))
+                            operation.message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                            if (operation.phase == ExtensionOperationPhase.DOWNLOADING) {
+                                LinearProgressIndicator(Modifier.fillMaxWidth())
+                                Text(
+                                    stringResource(
+                                        R.string.extension_download_progress,
+                                        formatBytes(operation.downloadedBytes),
+                                        formatBytes(operation.totalBytes ?: operation.downloadedBytes),
+                                    ),
+                                )
                             }
-                        }
-                        if (operation.phase == ExtensionOperationPhase.FAILED) {
-                            TextButton(
-                                onClick = {
-                                    viewModel.installExtension(extension.packageName, extension.repositoryUrl)
-                                },
+                            if (operation.phase == ExtensionOperationPhase.DOWNLOADING ||
+                                operation.phase == ExtensionOperationPhase.NEED_INSTALL_PERMISSION
                             ) {
-                                Text(stringResource(R.string.extension_action_retry))
+                                TextButton(onClick = { viewModel.cancelExtensionInstall(extension.packageName) }) {
+                                    Text(stringResource(R.string.action_cancel))
+                                }
+                            }
+                            if (operation.phase == ExtensionOperationPhase.FAILED) {
+                                TextButton(
+                                    onClick = {
+                                        viewModel.installExtension(extension.packageName, extension.repositoryUrl)
+                                    },
+                                ) {
+                                    Text(stringResource(R.string.extension_action_retry))
+                                }
                             }
                         }
                     }
@@ -1119,63 +1513,218 @@ private fun formatBytes(bytes: Long): String = when {
 }
 
 @Composable
-private fun SettingsScreen(viewModel: ShuraViewModel, state: ShuraUiState, padding: PaddingValues) {
+private fun SettingsScreen(
+    viewModel: ShuraViewModel,
+    state: ShuraUiState,
+    padding: PaddingValues,
+    onNavigate: (Destination) -> Unit,
+) {
     var customDuration by rememberSaveable { mutableStateOf(state.autoFlipDurationSeconds.toString()) }
+    val context = LocalContext.current
+    val cacheBytes by androidx.compose.runtime.produceState<Long?>(
+        initialValue = null,
+        key1 = context.cacheDir,
+        key2 = state.maintenanceMessage,
+    ) {
+        value = withContext(Dispatchers.IO) {
+            val transientCache = context.cacheDir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+            val repositoryCache = context.filesDir.resolve("repository-catalog-cache")
+                .takeIf { it.exists() }
+                ?.walkTopDown()
+                ?.filter { it.isFile }
+                ?.sumOf { it.length() }
+                ?: 0L
+            transientCache + repositoryCache
+        }
+    }
+    val packageInfo = remember(context) {
+        context.packageManager.getPackageInfo(context.packageName, 0)
+    }
     Column(
         Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        SettingSwitch(
-            title = stringResource(R.string.settings_dark_theme),
-            checked = state.darkTheme,
-            onCheckedChange = viewModel::setDarkTheme,
-        )
-        Text(stringResource(R.string.settings_language), style = MaterialTheme.typography.titleMedium)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(
-                selected = state.language == "ar",
-                onClick = { viewModel.setLanguage("ar") },
-                label = { Text(stringResource(R.string.settings_arabic)) },
-            )
-            FilterChip(
-                selected = state.language == "en",
-                onClick = { viewModel.setLanguage("en") },
-                label = { Text(stringResource(R.string.settings_english)) },
-            )
-        }
-        HorizontalDivider()
-        Text(stringResource(R.string.settings_reader_title), style = MaterialTheme.typography.titleLarge)
-        SettingSwitch(
-            title = stringResource(R.string.settings_autoflip),
-            checked = state.autoFlipEnabled,
-            onCheckedChange = viewModel::setAutoFlipEnabled,
-        )
-        Text(stringResource(R.string.settings_autoflip_duration), style = MaterialTheme.typography.titleMedium)
-        PresetDurations(state.autoFlipDurationSeconds, viewModel::setAutoFlipDuration)
-        OutlinedTextField(
-            value = customDuration,
-            onValueChange = { customDuration = it.filter(Char::isDigit).take(2) },
-            label = { Text(stringResource(R.string.settings_custom_duration)) },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        OutlinedButton(
-            onClick = { customDuration.toIntOrNull()?.let(viewModel::setAutoFlipDuration) },
-            enabled = customDuration.toIntOrNull() in 1..30,
+        SettingsGroup(
+            title = stringResource(R.string.settings_sources_title),
+            description = stringResource(R.string.settings_sources_body),
         ) {
-            Text(stringResource(R.string.settings_custom_apply))
+            OutlinedButton(
+                onClick = { onNavigate(Destination.REPOSITORIES) },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(stringResource(R.string.settings_manage_repositories))
+            }
+            OutlinedButton(
+                onClick = { onNavigate(Destination.EXTENSIONS) },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(stringResource(R.string.settings_manage_extensions))
+            }
         }
-        SettingSwitch(
-            title = stringResource(R.string.settings_pause_touch),
-            checked = state.pauseAutoFlipOnTouch,
-            onCheckedChange = viewModel::setPauseAutoFlipOnTouch,
-        )
-        HorizontalDivider()
-        Text(stringResource(R.string.settings_policy_title), style = MaterialTheme.typography.titleMedium)
-        Text(stringResource(R.string.settings_policy_body), color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(stringResource(R.string.settings_compatibility_title), style = MaterialTheme.typography.titleMedium)
-        Text(stringResource(R.string.settings_compatibility_body), color = MaterialTheme.colorScheme.onSurfaceVariant)
+        SettingsGroup(title = stringResource(R.string.settings_theme)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = state.themeMode == ThemeMode.SYSTEM,
+                    onClick = { viewModel.setThemeMode(ThemeMode.SYSTEM) },
+                    label = { Text(stringResource(R.string.settings_theme_system)) },
+                )
+                FilterChip(
+                    selected = state.themeMode == ThemeMode.LIGHT,
+                    onClick = { viewModel.setThemeMode(ThemeMode.LIGHT) },
+                    label = { Text(stringResource(R.string.settings_theme_light)) },
+                )
+                FilterChip(
+                    selected = state.themeMode == ThemeMode.DARK,
+                    onClick = { viewModel.setThemeMode(ThemeMode.DARK) },
+                    label = { Text(stringResource(R.string.settings_theme_dark)) },
+                )
+            }
+            Text(stringResource(R.string.settings_language), style = MaterialTheme.typography.titleMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = state.language == "ar",
+                    onClick = { viewModel.setLanguage("ar") },
+                    label = { Text(stringResource(R.string.settings_arabic)) },
+                )
+                FilterChip(
+                    selected = state.language == "en",
+                    onClick = { viewModel.setLanguage("en") },
+                    label = { Text(stringResource(R.string.settings_english)) },
+                )
+            }
+            SettingSwitch(
+                title = stringResource(R.string.settings_data_saver),
+                checked = state.dataSaver,
+                onCheckedChange = viewModel::setDataSaver,
+            )
+        }
+        SettingsGroup(title = stringResource(R.string.settings_reader_title)) {
+            Text(stringResource(R.string.settings_reader_orientation), style = MaterialTheme.typography.titleMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = state.readerOrientation == ReaderOrientation.HORIZONTAL,
+                    onClick = { viewModel.setReaderOrientation(ReaderOrientation.HORIZONTAL) },
+                    label = { Text(stringResource(R.string.settings_reader_horizontal)) },
+                )
+                FilterChip(
+                    selected = state.readerOrientation == ReaderOrientation.VERTICAL,
+                    onClick = { viewModel.setReaderOrientation(ReaderOrientation.VERTICAL) },
+                    label = { Text(stringResource(R.string.settings_reader_vertical)) },
+                )
+            }
+            Text(stringResource(R.string.settings_image_fit), style = MaterialTheme.typography.titleMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = state.imageFitMode == ImageFitMode.FIT,
+                    onClick = { viewModel.setImageFitMode(ImageFitMode.FIT) },
+                    label = { Text(stringResource(R.string.settings_image_fit_contain)) },
+                )
+                FilterChip(
+                    selected = state.imageFitMode == ImageFitMode.CROP,
+                    onClick = { viewModel.setImageFitMode(ImageFitMode.CROP) },
+                    label = { Text(stringResource(R.string.settings_image_fit_crop)) },
+                )
+            }
+            SettingSwitch(
+                title = stringResource(R.string.settings_reader_controls),
+                checked = state.showReaderControls,
+                onCheckedChange = viewModel::setShowReaderControls,
+            )
+            SettingSwitch(
+                title = stringResource(R.string.settings_autoflip),
+                checked = state.autoFlipEnabled,
+                onCheckedChange = viewModel::setAutoFlipEnabled,
+            )
+            Text(stringResource(R.string.settings_autoflip_duration), style = MaterialTheme.typography.titleMedium)
+            PresetDurations(state.autoFlipDurationSeconds, viewModel::setAutoFlipDuration)
+            OutlinedTextField(
+                value = customDuration,
+                onValueChange = { customDuration = it.filter(Char::isDigit).take(2) },
+                label = { Text(stringResource(R.string.settings_custom_duration)) },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedButton(
+                onClick = { customDuration.toIntOrNull()?.let(viewModel::setAutoFlipDuration) },
+                enabled = customDuration.toIntOrNull() in 1..30,
+            ) {
+                Text(stringResource(R.string.settings_custom_apply))
+            }
+            SettingSwitch(
+                title = stringResource(R.string.settings_pause_touch),
+                checked = state.pauseAutoFlipOnTouch,
+                onCheckedChange = viewModel::setPauseAutoFlipOnTouch,
+            )
+        }
+        SettingsGroup(title = stringResource(R.string.settings_storage_title)) {
+            Text(
+                stringResource(
+                    R.string.settings_storage_usage,
+                    cacheBytes?.let(::formatBytes) ?: stringResource(R.string.value_unknown),
+                ),
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Text(stringResource(R.string.settings_storage_note), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            OutlinedButton(
+                onClick = viewModel::clearTemporaryApkFiles,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(stringResource(R.string.settings_clear_temporary))
+            }
+            state.maintenanceMessage?.let { message ->
+                Text(
+                    if (message.startsWith("temporary_files_cleared:")) {
+                        stringResource(
+                            R.string.settings_temporary_cleared,
+                            message.substringAfter(':').toIntOrNull() ?: 0,
+                        )
+                    } else {
+                        stringResource(R.string.settings_maintenance_error, message)
+                    },
+                    color = if (message.startsWith("temporary_files_cleared:")) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.error
+                    },
+                )
+            }
+        }
+        SettingsGroup(title = stringResource(R.string.settings_policy_title)) {
+            Text(stringResource(R.string.settings_policy_body), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(stringResource(R.string.settings_compatibility_title), style = MaterialTheme.typography.titleMedium)
+            Text(stringResource(R.string.settings_compatibility_body), color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        SettingsGroup(title = stringResource(R.string.settings_about_title)) {
+            Text(stringResource(R.string.settings_about_name, stringResource(R.string.app_name)))
+            Text(stringResource(R.string.settings_about_version, packageInfo.versionName ?: stringResource(R.string.value_unknown)))
+            Text(stringResource(R.string.settings_about_build, packageInfo.longVersionCode))
+            Text(stringResource(R.string.settings_about_package, context.packageName))
+            Text(stringResource(R.string.settings_about_android, Build.VERSION.SDK_INT, Build.VERSION.RELEASE))
+        }
+    }
+}
+
+@Composable
+private fun SettingsGroup(
+    title: String,
+    description: String? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+    ) {
+        Column(
+            Modifier.fillMaxWidth().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            description?.let {
+                Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            content()
+        }
     }
 }
 
@@ -1243,6 +1792,9 @@ private fun ReaderScreen(viewModel: ShuraViewModel, state: ShuraUiState, padding
                 autoFlipEnabled = state.autoFlipEnabled,
                 autoFlipDurationSeconds = state.autoFlipDurationSeconds,
                 pauseOnTouch = state.pauseAutoFlipOnTouch,
+                orientation = state.readerOrientation,
+                fitMode = state.imageFitMode,
+                showControls = state.showReaderControls,
                 onAutoFlipToggle = { viewModel.setAutoFlipEnabled(!state.autoFlipEnabled) },
                 onAutoFlipFinished = { viewModel.setAutoFlipEnabled(false) },
                 onPageTouch = {
@@ -1268,6 +1820,9 @@ private fun ImagePager(
     autoFlipEnabled: Boolean,
     autoFlipDurationSeconds: Int,
     pauseOnTouch: Boolean,
+    orientation: ReaderOrientation,
+    fitMode: ImageFitMode,
+    showControls: Boolean,
     onAutoFlipToggle: () -> Unit,
     onAutoFlipFinished: () -> Unit,
     onPageTouch: () -> Unit,
@@ -1326,26 +1881,25 @@ private fun ImagePager(
     }
 
     Column(modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                stringResource(R.string.reader_page, pagerState.currentPage + 1, uris.size),
-                style = MaterialTheme.typography.labelLarge,
-            )
+        if (showControls) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    stringResource(R.string.reader_page, pagerState.currentPage + 1, uris.size),
+                    style = MaterialTheme.typography.labelLarge,
+                )
+            }
         }
         controllerError?.let {
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
-        HorizontalPager(
-            state = pagerState,
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            beyondViewportPageCount = 1,
-        ) { index ->
+        val pageContent: @Composable (Int) -> Unit = { index ->
             ImagePage(
                 uri = uris[index],
+                fitMode = fitMode,
                 onTouch = {
                     if (pauseOnTouch) {
                         controllerReference.get()?.onTouch()
@@ -1357,11 +1911,25 @@ private fun ImagePager(
                 },
             )
         }
-        OutlinedButton(onClick = onAutoFlipToggle) {
-            Text(
-                if (autoFlipEnabled) stringResource(R.string.reader_auto_flip_stop)
-                else stringResource(R.string.reader_auto_flip_start),
-            )
+        when (orientation) {
+            ReaderOrientation.HORIZONTAL -> HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                beyondViewportPageCount = 1,
+            ) { index -> pageContent(index) }
+            ReaderOrientation.VERTICAL -> VerticalPager(
+                state = pagerState,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                beyondViewportPageCount = 1,
+            ) { index -> pageContent(index) }
+        }
+        if (showControls) {
+            OutlinedButton(onClick = onAutoFlipToggle) {
+                Text(
+                    if (autoFlipEnabled) stringResource(R.string.reader_auto_flip_stop)
+                    else stringResource(R.string.reader_auto_flip_start),
+                )
+            }
         }
     }
 }
@@ -1373,7 +1941,12 @@ private sealed interface ImageLoadState {
 }
 
 @Composable
-private fun ImagePage(uri: Uri, onTouch: () -> Unit, onReady: (Boolean) -> Unit) {
+private fun ImagePage(
+    uri: Uri,
+    fitMode: ImageFitMode,
+    onTouch: () -> Unit,
+    onReady: (Boolean) -> Unit,
+) {
     val context = LocalContext.current
     var retryKey by remember(uri) { mutableIntStateOf(0) }
     val imageState by androidx.compose.runtime.produceState<ImageLoadState>(
@@ -1405,11 +1978,18 @@ private fun ImagePage(uri: Uri, onTouch: () -> Unit, onReady: (Boolean) -> Unit)
             .pointerInput(uri) {
                 detectTapGestures(onTap = { onTouch() })
             }
-            .pointerInput(uri) {
-                detectTransformGestures { _, pan, zoom, _ ->
-                    scale = (scale * zoom).coerceIn(1f, 4f)
-                    offsetX += pan.x
-                    offsetY += pan.y
+            .pointerInput(uri, onTouch) {
+                while (true) {
+                    var touchNotified = false
+                    detectTransformGestures { _, pan, zoom, _ ->
+                        if (!touchNotified) {
+                            onTouch()
+                            touchNotified = true
+                        }
+                        scale = (scale * zoom).coerceIn(1f, 4f)
+                        offsetX += pan.x
+                        offsetY += pan.y
+                    }
                 }
             },
         contentAlignment = Alignment.Center,
@@ -1434,6 +2014,10 @@ private fun ImagePage(uri: Uri, onTouch: () -> Unit, onReady: (Boolean) -> Unit)
                     scaleY = scale
                     translationX = offsetX
                     translationY = offsetY
+                },
+                contentScale = when (fitMode) {
+                    ImageFitMode.FIT -> ContentScale.Fit
+                    ImageFitMode.CROP -> ContentScale.Crop
                 },
             )
         }
@@ -1467,7 +2051,12 @@ private fun EmptyState(title: String, body: String, modifier: Modifier = Modifie
             Modifier.size(56.dp).clip(CircleShape).background(MaterialTheme.colorScheme.secondaryContainer),
             contentAlignment = Alignment.Center,
         ) {
-            Text("·", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
+            Text(
+                stringResource(R.string.brand_mark),
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+            )
         }
 
         Spacer(Modifier.height(12.dp))

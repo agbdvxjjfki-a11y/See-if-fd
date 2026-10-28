@@ -152,7 +152,7 @@ class ExtensionInstallCoordinator(
         onProgress: (ApkDownloadProgress) -> Unit,
         onVerifying: () -> Unit = {},
     ): VerifiedExtensionApk {
-        require(!contentPolicy.evaluate(extension).isBlocked) {
+        require(!contentPolicy.isBlocked(extension)) {
             "رفض تثبيت الإضافة وفق سياسة المحتوى المدمجة"
         }
         require(extension.packageName.matches(PACKAGE_NAME_PATTERN)) { "معرّف حزمة الإضافة غير صالح" }
@@ -171,13 +171,20 @@ class ExtensionInstallCoordinator(
             }
             val archive = archiveInspector.inspect(destination)
             require(archive.packageName == extension.packageName) {
-                "معرّف الحزمة داخل APK لا يطابق الإضافة في الفهرس"
+                "معرّف الحزمة لا يطابق فهرس '${extension.name}': المتوقع " +
+                    "${extension.packageName}، والفعلي ${archive.packageName}"
             }
             require(archive.versionCode == extension.versionCode) {
-                "رقم إصدار APK لا يطابق الإصدار المنشور في الفهرس"
+                "رقم إصدار APK لا يطابق فهرس '${extension.name}' (${extension.packageName}): " +
+                    "المتوقع versionName='${extension.version}' versionCode=${extension.versionCode}، " +
+                    "والفعلي versionName='${archive.versionName ?: "غير متوفر"}' " +
+                    "versionCode=${archive.versionCode}"
             }
             require(extension.version.isBlank() || archive.versionName == extension.version) {
-                "اسم إصدار APK لا يطابق الإصدار المنشور في الفهرس"
+                "اسم إصدار APK لا يطابق فهرس '${extension.name}' (${extension.packageName}): " +
+                    "المتوقع versionName='${extension.version}' versionCode=${extension.versionCode}، " +
+                    "والفعلي versionName='${archive.versionName ?: "غير متوفر"}' " +
+                    "versionCode=${archive.versionCode}"
             }
             extension.apkSignerSha256?.let { expectedSigner ->
                 require(archive.signerSha256.any { it.equals(expectedSigner, ignoreCase = true) }) {

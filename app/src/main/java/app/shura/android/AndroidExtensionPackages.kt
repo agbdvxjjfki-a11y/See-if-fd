@@ -145,6 +145,7 @@ class AndroidExtensionPackages(private val context: Context) {
             signatures?.map { it.toByteArray() }.orEmpty()
         }
 
+    @Suppress("DEPRECATION")
     private fun PackageInfo.versionCodeLongCompat(): Long =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) longVersionCode else versionCode.toLong()
 
