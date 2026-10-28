@@ -4,6 +4,7 @@
     <string name="nav_library">مكتبتي</string>
     <string name="nav_repositories">المستودعات</string>
     <string name="nav_extensions">الإضافات</string>
+    <string name="nav_downloads">التنزيلات</string>
     <string name="nav_settings">الإعدادات</string>
     <string name="nav_reader">القارئ</string>
     <string name="home_greeting">مرحبًا بك في شورا</string>
@@ -46,7 +47,14 @@
     <string name="repository_format_note">التنسيقات المدعومة: index.pb وفق مخطط Mihon، وindex.json وindex.min.json ببنية إضافات Mihon. مستودع Keiyoushi مجتمعي وليس رسميًا تابعًا إلى Mihon. لا يدعم التطبيق تثبيت الإضافات أو تشغيلها.</string>
     <string name="extensions_title">الإضافات المتاحة</string>
     <string name="extensions_search_hint">ابحث بالاسم أو الحزمة أو اللغة</string>
+    <string name="extensions_sort_name">الاسم</string>
+    <string name="extensions_sort_version">أحدث إصدار</string>
+    <string name="extensions_language_all">كل اللغات</string>
     <string name="extensions_empty">حدّث مستودعًا متوافقًا لعرض إضافاته الحقيقية</string>
+    <string name="extension_summary">%1$s · الإصدار %2$s</string>
+    <string name="extension_package">معرّف الحزمة: %1$s</string>
+    <string name="extension_sources_title">المصادر المدرجة</string>
+    <string name="extension_not_installed_supported">التثبيت غير متاح حاليًا؛ لم يتحقق التطبيق من حالة تثبيت هذه الحزمة.</string>
     <string name="extension_source">المصدر: %1$s</string>
     <string name="extension_version">الإصدار %1$s · الرمز %2$d</string>
     <string name="extension_language">اللغة: %1$s</string>
@@ -84,8 +92,11 @@
     <string name="settings_policy_body">حظر المؤشرات الصريحة مدمج ولا يمكن تعطيله من التطبيق. فحص البيانات لا يحلل صور الصفحات.</string>
     <string name="settings_compatibility_title">حدود التوافق</string>
     <string name="settings_compatibility_body">التطبيق يقرأ بيانات فهارس Mihon المتوافقة فقط. لا يثبت ملفات APK ولا يشغّل إضافات Mihon أو مصادرها.</string>
+    <string name="downloads_unavailable_title">لا توجد تنزيلات يديرها التطبيق</string>
+    <string name="downloads_unavailable_body">لا يدعم Shura تنزيل الفصول أو ملفات APK حاليًا. لن تظهر هنا تنزيلات وهمية.</string>
     <string name="action_open">فتح</string>
     <string name="action_cancel">إلغاء</string>
     <string name="action_save">حفظ</string>
+    <string name="action_close">إغلاق</string>
     <string name="status_error">حدث خطأ: %1$s</string>
 </resources>

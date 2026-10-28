@@ -4,6 +4,7 @@
     <string name="nav_library">Library</string>
     <string name="nav_repositories">Repositories</string>
     <string name="nav_extensions">Extensions</string>
+    <string name="nav_downloads">Downloads</string>
     <string name="nav_settings">Settings</string>
     <string name="nav_reader">Reader</string>
     <string name="home_greeting">Welcome to Shura</string>
@@ -46,7 +47,14 @@
     <string name="repository_format_note">Supported formats: index.pb using the Mihon schema, and index.json/index.min.json using the Mihon extension-array structure. Keiyoushi is a community repository, not an official Mihon repository. Extension installation and execution are not supported.</string>
     <string name="extensions_title">Available extensions</string>
     <string name="extensions_search_hint">Search by name, package, or language</string>
+    <string name="extensions_sort_name">Name</string>
+    <string name="extensions_sort_version">Latest version</string>
+    <string name="extensions_language_all">All languages</string>
     <string name="extensions_empty">Refresh a compatible repository to see its real extensions</string>
+    <string name="extension_summary">%1$s · version %2$s</string>
+    <string name="extension_package">Package ID: %1$s</string>
+    <string name="extension_sources_title">Listed sources</string>
+    <string name="extension_not_installed_supported">Installation is unavailable; the app has not checked whether this package is installed.</string>
     <string name="extension_source">Source: %1$s</string>
     <string name="extension_version">Version %1$s · code %2$d</string>
     <string name="extension_language">Language: %1$s</string>
@@ -84,8 +92,11 @@
     <string name="settings_policy_body">Blocking explicit indicators is built in and cannot be disabled in the app. Metadata checks do not analyze page images.</string>
     <string name="settings_compatibility_title">Compatibility limits</string>
     <string name="settings_compatibility_body">The app reads compatible Mihon catalog indexes only. It does not install APKs or run Mihon extensions or their sources.</string>
+    <string name="downloads_unavailable_title">No app-managed downloads</string>
+    <string name="downloads_unavailable_body">Shura does not currently download chapters or APK files. No fake downloads are shown here.</string>
     <string name="action_open">Open</string>
     <string name="action_cancel">Cancel</string>
     <string name="action_save">Save</string>
+    <string name="action_close">Close</string>
     <string name="status_error">Error: %1$s</string>
 </resources>

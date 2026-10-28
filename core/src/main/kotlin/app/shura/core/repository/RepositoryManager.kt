@@ -1,5 +1,6 @@
 package app.shura.core.repository
 
+import app.shura.core.content.ContentPolicyEngine
 import java.time.Instant
 import java.util.LinkedHashMap
 import java.util.logging.Level
@@ -24,6 +25,7 @@ class RepositoryManager(
     private val store: RepositoryConfigurationStore,
     private val indexSource: RepositoryIndexSource,
     private val parser: RepositoryCatalogParser = RepositoryCatalogParser(),
+    private val contentPolicy: ContentPolicyEngine = ContentPolicyEngine(),
 ) {
     private val catalogs = LinkedHashMap<String, RepositoryCatalogSnapshot>()
 
@@ -77,7 +79,7 @@ class RepositoryManager(
         }
         return RepositoryCatalogSnapshot(
             repository = repository,
-            extensions = parsed.extensions,
+            extensions = parsed.extensions.filterNot { contentPolicy.evaluate(it).isBlocked },
             storeName = parsed.name,
             indexUrl = fetched.diagnostic.finalUrl,
             contentType = fetched.contentType,
@@ -145,6 +147,7 @@ class RepositoryManager(
         return catalogs.values.asSequence()
             .filter { normalizedRepository == null || it.repository.normalized == normalizedRepository }
             .flatMap { it.extensions.asSequence() }
+            .filterNot { contentPolicy.evaluate(it).isBlocked }
             .filter { language == null || it.language.equals(language, ignoreCase = true) }
             .filter { extension ->
                 normalizedQuery.isEmpty() ||
@@ -159,6 +162,7 @@ class RepositoryManager(
     fun availableUpdates(installedVersionCodes: Map<String, Long>): List<ExtensionDescriptor> =
         catalogs.values.asSequence()
             .flatMap { it.extensions.asSequence() }
+            .filterNot { contentPolicy.evaluate(it).isBlocked }
             .filter { extension ->
                 installedVersionCodes[extension.packageName]?.let { extension.versionCode > it } == true
             }

@@ -1,6 +1,7 @@
 package app.shura.core.content
 
 import app.shura.core.repository.ExtensionDescriptor
+import app.shura.core.repository.RepositorySourceDescriptor
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -84,6 +85,32 @@ class ContentPolicyTest {
 
         assertTrue(result.isBlocked)
         assertTrue(result.reasons.any { it.contains("nsfw flag") })
+    }
+
+    @Test
+    fun blocksExtensionWhenItsListedSourceHasAnExplicitIndicator() {
+        val result = ContentPolicyEngine().evaluate(
+            ExtensionDescriptor(
+                name = "Source catalog",
+                packageName = "org.example.catalog",
+                apkPath = "catalog.apk",
+                language = "en",
+                version = "1.0",
+                versionCode = 1,
+                repositoryUrl = "https://example.org",
+                adultFlag = 0,
+                sources = listOf(
+                    RepositorySourceDescriptor(
+                        id = "1",
+                        name = "Hentai Library",
+                        language = "en",
+                        homeUrl = null,
+                    ),
+                ),
+            ),
+        )
+
+        assertTrue(result.isBlocked)
     }
 
     @Test

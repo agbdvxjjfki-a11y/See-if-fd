@@ -14,6 +14,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -80,6 +81,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
@@ -89,7 +91,6 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import app.shura.core.content.ContentRisk
 import app.shura.core.reader.AutoFlipController
 import app.shura.core.reader.AutoFlipSettings
 import app.shura.core.repository.ExtensionDescriptor
@@ -99,12 +100,17 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.IOException
+import java.net.HttpURLConnection
+import java.net.URI
+import java.net.URISyntaxException
 
 private enum class Destination {
     HOME,
     LIBRARY,
     REPOSITORIES,
     EXTENSIONS,
+    DOWNLOADS,
     READER,
     SETTINGS,
 }
@@ -205,6 +211,7 @@ private fun ShuraApp(viewModel: ShuraViewModel, state: ShuraUiState) {
                         Destination.LIBRARY,
                         Destination.REPOSITORIES,
                         Destination.EXTENSIONS,
+                        Destination.DOWNLOADS,
                         Destination.SETTINGS,
                     ).forEach { item ->
                         NavigationBarItem(
@@ -217,6 +224,7 @@ private fun ShuraApp(viewModel: ShuraViewModel, state: ShuraUiState) {
                                         Destination.LIBRARY -> "▤"
                                         Destination.REPOSITORIES -> "↻"
                                         Destination.EXTENSIONS -> "◇"
+                                        Destination.DOWNLOADS -> "↓"
                                         Destination.SETTINGS -> "⚙"
                                         Destination.READER -> "▣"
                                     },
@@ -238,6 +246,7 @@ private fun ShuraApp(viewModel: ShuraViewModel, state: ShuraUiState) {
             Destination.LIBRARY -> LibraryScreen(viewModel, state, padding)
             Destination.REPOSITORIES -> RepositoriesScreen(viewModel, state, padding)
             Destination.EXTENSIONS -> ExtensionsScreen(state, padding)
+            Destination.DOWNLOADS -> DownloadsScreen(padding)
             Destination.READER -> ReaderScreen(viewModel, state, padding)
             Destination.SETTINGS -> SettingsScreen(viewModel, state, padding)
         }
@@ -249,6 +258,7 @@ private fun Destination.titleResource(): Int = when (this) {
     Destination.LIBRARY -> R.string.nav_library
     Destination.REPOSITORIES -> R.string.nav_repositories
     Destination.EXTENSIONS -> R.string.nav_extensions
+    Destination.DOWNLOADS -> R.string.nav_downloads
     Destination.READER -> R.string.reader_title
     Destination.SETTINGS -> R.string.nav_settings
 }
@@ -596,13 +606,14 @@ private fun RepositoryCard(
 @Composable
 private fun ExtensionsScreen(state: ShuraUiState, padding: PaddingValues) {
     var query by rememberSaveable { mutableStateOf("") }
-    val gate = remember { ExtensionSafetyGate() }
+    var selectedLanguage by rememberSaveable { mutableStateOf<String?>(null) }
+    var sortByLatest by rememberSaveable { mutableStateOf(false) }
+    var selectedExtension by remember { mutableStateOf<ExtensionDescriptor?>(null) }
     val allExtensions = state.extensionCatalog()
-    val extensions = allExtensions.filter { extension ->
-        query.isBlank() ||
-            extension.name.contains(query, ignoreCase = true) ||
-            extension.packageName.contains(query, ignoreCase = true) ||
-            extension.language.contains(query, ignoreCase = true)
+    val languages = allExtensions.map { it.language }.filter(String::isNotBlank).distinct().sorted()
+    val extensions = state.searchExtensions(query, selectedLanguage).let { matches ->
+        if (sortByLatest) matches.sortedByDescending { it.versionCode }
+        else matches.sortedBy { it.name.lowercase() }
     }
     Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp)) {
         OutlinedTextField(
@@ -612,6 +623,28 @@ private fun ExtensionsScreen(state: ShuraUiState, padding: PaddingValues) {
             label = { Text(stringResource(R.string.extensions_search_hint)) },
             singleLine = true,
         )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            FilterChip(
+                selected = !sortByLatest,
+                onClick = { sortByLatest = false },
+                label = { Text(stringResource(R.string.extensions_sort_name)) },
+            )
+            FilterChip(
+                selected = sortByLatest,
+                onClick = { sortByLatest = true },
+                label = { Text(stringResource(R.string.extensions_sort_version)) },
+            )
+        }
+        if (languages.isNotEmpty()) {
+            LanguageFilterRow(
+                languages = languages,
+                selectedLanguage = selectedLanguage,
+                onSelect = { selectedLanguage = it },
+            )
+        }
         Text(
             stringResource(R.string.extension_install_unavailable),
             modifier = Modifier.padding(vertical = 8.dp),
@@ -631,67 +664,199 @@ private fun ExtensionsScreen(state: ShuraUiState, padding: PaddingValues) {
                 contentPadding = PaddingValues(bottom = 16.dp),
             ) {
                 items(extensions, key = { "${it.repositoryUrl}:${it.packageName}" }) { extension ->
-                    ExtensionCard(extension, gate)
+                    ExtensionCard(extension) { selectedExtension = extension }
                 }
+            }
+        }
+    }
+    selectedExtension?.let { extension ->
+        val stillVisible = state.findExtension(extension.packageName, extension.repositoryUrl)
+        if (stillVisible != null) {
+            ExtensionDetailsDialog(extension = stillVisible) { selectedExtension = null }
+        } else {
+            selectedExtension = null
+        }
+    }
+}
+
+@Composable
+private fun LanguageFilterRow(
+    languages: List<String>,
+    selectedLanguage: String?,
+    onSelect: (String?) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        FilterChip(
+            selected = selectedLanguage == null,
+            onClick = { onSelect(null) },
+            label = { Text(stringResource(R.string.extensions_language_all)) },
+        )
+        languages.forEach { language ->
+            FilterChip(
+                selected = selectedLanguage == language,
+                onClick = { onSelect(if (selectedLanguage == language) null else language) },
+                label = { Text(language) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun ExtensionCard(extension: ExtensionDescriptor, onClick: () -> Unit) {
+    Card(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            ExtensionIcon(extension)
+            Column(
+                Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(extension.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    stringResource(R.string.extension_summary, extension.language, extension.version),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(extension.packageName, style = MaterialTheme.typography.labelSmall)
             }
         }
     }
 }
 
 @Composable
-private fun ExtensionCard(extension: ExtensionDescriptor, gate: ExtensionSafetyGate) {
-    val result = remember(extension) { gate.evaluate(extension) }
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = if (result.isBlocked) {
-                MaterialTheme.colorScheme.errorContainer
-            } else {
-                MaterialTheme.colorScheme.surfaceContainer
-            },
-        ),
+private fun ExtensionIcon(extension: ExtensionDescriptor) {
+    val iconUrl = extension.iconUrl
+    val bitmap by androidx.compose.runtime.produceState<Bitmap?>(
+        initialValue = null,
+        key1 = iconUrl,
     ) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            Text(extension.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Text(extension.packageName, style = MaterialTheme.typography.bodySmall)
-            Text(stringResource(R.string.extension_source, extension.repositoryUrl), style = MaterialTheme.typography.bodySmall)
-            Text(
-                stringResource(R.string.extension_version, extension.version, extension.versionCode),
-                style = MaterialTheme.typography.bodySmall,
-            )
-            Text(stringResource(R.string.extension_language, extension.language), style = MaterialTheme.typography.bodySmall)
-            extension.sources.forEach { source ->
-                if (source.name.isNotBlank() || source.language.isNotBlank()) {
-                    Text(
-                        stringResource(R.string.extension_source_details, source.name, source.language),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    source.homeUrl?.let {
-                        Text(stringResource(R.string.extension_source_url, it), style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-            }
-            when {
-                result.isBlocked -> Text(
-                    stringResource(R.string.extension_blocked) + " · " +
-                        stringResource(R.string.extension_policy_reason, result.reasons.joinToString()),
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                result.risk == ContentRisk.UNKNOWN || result.risk == ContentRisk.MATURE -> Text(
-                    stringResource(R.string.extension_warning) + " · " +
-                        stringResource(R.string.extension_policy_reason, result.warnings.joinToString()),
-                    color = MaterialTheme.colorScheme.tertiary,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                else -> Text(
-                    stringResource(R.string.extension_allowed),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodySmall,
-                )
+        value = iconUrl?.let { url ->
+            withContext(Dispatchers.IO) {
+                loadExtensionIcon(url)
             }
         }
     }
+    val loadedBitmap = bitmap
+    if (loadedBitmap == null) {
+        Box(
+            Modifier.size(44.dp).clip(CircleShape).background(MaterialTheme.colorScheme.secondaryContainer),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                extension.name.firstOrNull()?.uppercase() ?: "•",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+        }
+    } else {
+        Image(
+            bitmap = loadedBitmap.asImageBitmap(),
+            contentDescription = extension.name,
+            modifier = Modifier.size(44.dp).clip(CircleShape),
+            contentScale = ContentScale.Crop,
+        )
+    }
+}
+
+private fun loadExtensionIcon(url: String): Bitmap? {
+    val uri = try {
+        URI(url)
+    } catch (_: URISyntaxException) {
+        return null
+    }
+    if (!uri.scheme.equals("https", ignoreCase = true) || uri.host.isNullOrBlank() || uri.userInfo != null) {
+        return null
+    }
+    val connection = uri.toURL().openConnection() as? HttpURLConnection ?: return null
+    return try {
+        connection.connectTimeout = ICON_CONNECT_TIMEOUT_MILLIS
+        connection.readTimeout = ICON_READ_TIMEOUT_MILLIS
+        connection.instanceFollowRedirects = false
+        connection.setRequestProperty("Accept", "image/*")
+        if (connection.responseCode != HttpURLConnection.HTTP_OK ||
+            connection.contentLengthLong > MAX_ICON_BYTES
+        ) {
+            return null
+        }
+        val bytes = connection.inputStream.use { it.readNBytes(MAX_ICON_BYTES + 1) }
+        if (bytes.size > MAX_ICON_BYTES) return null
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0 ||
+            bounds.outWidth > MAX_ICON_DIMENSION || bounds.outHeight > MAX_ICON_DIMENSION
+        ) return null
+        var sampleSize = 1
+        while (bounds.outWidth / sampleSize > ICON_DECODE_DIMENSION ||
+            bounds.outHeight / sampleSize > ICON_DECODE_DIMENSION
+        ) {
+            sampleSize *= 2
+        }
+        BitmapFactory.decodeByteArray(
+            bytes,
+            0,
+            bytes.size,
+            BitmapFactory.Options().apply { inSampleSize = sampleSize },
+        )
+    } catch (_: IOException) {
+        null
+    } catch (_: IllegalArgumentException) {
+        null
+    } finally {
+        connection.disconnect()
+    }
+}
+
+@Composable
+private fun ExtensionDetailsDialog(extension: ExtensionDescriptor, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(extension.name) },
+        text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(stringResource(R.string.extension_package, extension.packageName))
+                Text(stringResource(R.string.extension_version, extension.version, extension.versionCode))
+                Text(stringResource(R.string.extension_language, extension.language))
+                Text(stringResource(R.string.extension_source, extension.repositoryUrl))
+                if (extension.sources.isNotEmpty()) {
+                    Text(stringResource(R.string.extension_sources_title), fontWeight = FontWeight.SemiBold)
+                    extension.sources.forEach { source ->
+                        if (source.name.isNotBlank() || source.language.isNotBlank()) {
+                            Text(stringResource(R.string.extension_source_details, source.name, source.language))
+                        }
+                        source.homeUrl?.let {
+                            Text(stringResource(R.string.extension_source_url, it))
+                        }
+                    }
+                }
+                Text(stringResource(R.string.extension_not_installed_supported))
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_close)) }
+        },
+    )
+}
+
+@Composable
+private fun DownloadsScreen(padding: PaddingValues) {
+    EmptyState(
+        title = stringResource(R.string.downloads_unavailable_title),
+        body = stringResource(R.string.downloads_unavailable_body),
+        modifier = Modifier.fillMaxSize().padding(padding),
+    )
 }
 
 @Composable
@@ -1045,6 +1210,7 @@ private fun EmptyState(title: String, body: String, modifier: Modifier = Modifie
         ) {
             Text("·", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
         }
+
         Spacer(Modifier.height(12.dp))
         Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         if (body.isNotBlank()) {
@@ -1056,4 +1222,11 @@ private fun EmptyState(title: String, body: String, modifier: Modifier = Modifie
             )
         }
     }
+
 }
+
+private const val ICON_CONNECT_TIMEOUT_MILLIS = 4_000
+private const val ICON_READ_TIMEOUT_MILLIS = 4_000
+private const val MAX_ICON_BYTES = 512 * 1024
+private const val MAX_ICON_DIMENSION = 32_768
+private const val ICON_DECODE_DIMENSION = 256

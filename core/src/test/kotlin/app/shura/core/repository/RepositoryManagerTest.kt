@@ -103,8 +103,45 @@ class RepositoryManagerTest {
         assertEquals(null, manager.refreshRepository("https://example.org/extensions").error)
     }
 
+    @Test
+    fun policyBlockedExtensionsNeverEnterCatalogSearchUpdatesOrRestoredCatalog() {
+        val store = InMemoryRepositoryStore()
+        val source = RepositoryIndexSource { fetched(policyIndex(), it) }
+        val manager = RepositoryManager(store, source)
+
+        val added = manager.addRepository("https://example.org/extensions")
+
+        assertEquals(listOf("org.example.safe"), added.extensions.map { it.packageName })
+        assertEquals(listOf("org.example.safe"), manager.search(query = "reader").map { it.packageName })
+        assertEquals(listOf("org.example.safe"), manager.availableUpdates(mapOf(
+            "org.example.safe" to 1L,
+            "org.example.blocked" to 1L,
+        )).map { it.packageName })
+
+        val restoredManager = RepositoryManager(store, source)
+        val restored = restoredManager.refreshAll().single()
+        assertEquals(listOf("org.example.safe"), restored.extensions.map { it.packageName })
+        assertTrue(restored.error == null)
+    }
+
+    @Test
+    fun policyRemovesOnlyBlockedExtensionsAndKeepsAllowedExtensionsFromSameRepository() {
+        val manager = RepositoryManager(
+            InMemoryRepositoryStore(),
+            RepositoryIndexSource { fetched(policyIndex(), it) },
+        )
+
+        val result = manager.testRepository("https://example.org/extensions")
+
+        assertEquals(1, result.extensions.size)
+        assertEquals("org.example.safe", result.extensions.single().packageName)
+    }
+
     private fun indexJson(versionCode: Int): String =
         """[{"name":"Reader","pkg":"org.example.reader","apk":"apk/reader.apk","lang":"en","version":"1.$versionCode","versionCode":$versionCode,"nsfw":0}]"""
+
+    private fun policyIndex(): String =
+        """[{"name":"Hentai Reader","pkg":"org.example.blocked","apk":"blocked.apk","lang":"en","version":"1.0","code":2,"nsfw":0},{"name":"Romance Reader","pkg":"org.example.safe","apk":"safe.apk","lang":"en","version":"1.0","code":2,"nsfw":0}]"""
 
     private fun fetched(body: String, repository: RepositoryAddress): FetchedRepositoryIndex {
         val indexUrl = repository.indexCandidates()

@@ -26,7 +26,9 @@ class ContentPolicyEngine {
         extensionName = extension.name,
         packageName = extension.packageName,
         description = description.orEmpty(),
-        tags = tags,
+        tags = tags + extension.sources.flatMap { source ->
+            listOfNotNull(source.name.takeIf(String::isNotBlank), source.message?.takeIf(String::isNotBlank))
+        },
         repositorySource = extension.repositoryUrl,
         adultFlag = extension.adultFlag,
     )

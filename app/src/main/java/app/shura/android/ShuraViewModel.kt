@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import app.shura.core.content.ContentPolicyEngine
 import app.shura.core.reader.AutoFlipSettings
 import app.shura.core.repository.ExtensionDescriptor
 import app.shura.core.repository.FileRepositoryConfigurationStore
@@ -37,7 +38,33 @@ data class ShuraUiState(
     val language: String = "ar",
     val initialized: Boolean = false,
 ) {
-    fun extensionCatalog(): List<ExtensionDescriptor> = repositories.flatMap { it.extensions }
+    fun extensionCatalog(): List<ExtensionDescriptor> =
+        repositories.asSequence()
+            .flatMap { it.extensions.asSequence() }
+            .filterNot { CONTENT_POLICY.evaluate(it).isBlocked }
+            .toList()
+
+    fun searchExtensions(query: String = "", language: String? = null): List<ExtensionDescriptor> {
+        val normalizedQuery = query.trim()
+        return extensionCatalog()
+            .filter { language == null || it.language.equals(language, ignoreCase = true) }
+            .filter { extension ->
+                normalizedQuery.isEmpty() ||
+                    extension.name.contains(normalizedQuery, ignoreCase = true) ||
+                    extension.packageName.contains(normalizedQuery, ignoreCase = true) ||
+                    extension.language.contains(normalizedQuery, ignoreCase = true)
+            }
+    }
+
+    fun findExtension(packageName: String, repositoryUrl: String? = null): ExtensionDescriptor? =
+        extensionCatalog().firstOrNull {
+            it.packageName == packageName &&
+                (repositoryUrl == null || it.repositoryUrl == repositoryUrl)
+        }
+
+    private companion object {
+        val CONTENT_POLICY = ContentPolicyEngine()
+    }
 }
 
 class ShuraViewModel(application: Application) : AndroidViewModel(application) {

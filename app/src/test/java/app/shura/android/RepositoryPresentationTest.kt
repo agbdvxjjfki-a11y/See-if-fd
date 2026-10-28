@@ -11,6 +11,7 @@ import app.shura.core.repository.RepositoryManager
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class RepositoryPresentationTest {
@@ -67,6 +68,26 @@ class RepositoryPresentationTest {
     }
 
     @Test
+    fun blockedExtensionsAreAbsentFromCatalogSearchAndDetailLookup() {
+        val blocked = extension("org.example.explicit", "Explicit Hentai", "en")
+        val allowed = extension("org.example.romance", "Summer Romance", "en")
+        val state = ShuraUiState(
+            repositories = listOf(
+                RepositoryCatalogSnapshot(
+                    repository = RepositoryAddress.parse("https://example.org/repo/index.json"),
+                    extensions = listOf(blocked, allowed),
+                ),
+            ),
+        )
+
+        assertEquals(listOf(allowed), state.extensionCatalog())
+        assertEquals(emptyList(), state.searchExtensions("hentai"))
+        assertEquals(listOf(allowed), state.searchExtensions("romance"))
+        assertNull(state.findExtension(blocked.packageName))
+        assertEquals(allowed, state.findExtension(allowed.packageName))
+    }
+
+    @Test
     fun launcherNameMatchesRequestedArabicAndEnglishBranding() {
         val manifest = File("src/main/AndroidManifest.xml").readText()
         val arabicStrings = File("src/main/res/values/strings.xml").readText()
@@ -88,7 +109,7 @@ class RepositoryPresentationTest {
             version = "1.0",
             versionCode = 1,
             repositoryUrl = "https://example.org/repo/index.json",
-            adultFlag = 0,
+            adultFlag = if (name.contains("hentai", ignoreCase = true)) 1 else 0,
             apkUrl = "https://example.org/repo/$packageName.apk",
         )
 
