@@ -13,10 +13,14 @@ class AutoFlipControllerTest {
         val settings = AutoFlipSettings()
         settings.durationSeconds = 1
         val pageReady = AtomicBoolean(false)
+        val checkedWhileUnready = CountDownLatch(1)
         val reachedEnd = CountDownLatch(1)
         val controller = AutoFlipController(
             settings = settings,
-            isPageReady = pageReady::get,
+            isPageReady = {
+                if (!pageReady.get()) checkedWhileUnready.countDown()
+                pageReady.get()
+            },
             advancePage = {
                 reachedEnd.countDown()
                 false
@@ -25,11 +29,11 @@ class AutoFlipControllerTest {
 
         controller.use {
             controller.start()
-            Thread.sleep(1_100)
+            assertTrue(checkedWhileUnready.await(3, TimeUnit.SECONDS))
             assertTrue(reachedEnd.count == 1L)
 
             pageReady.set(true)
-            assertTrue(reachedEnd.await(2, TimeUnit.SECONDS))
+            assertTrue(reachedEnd.await(3, TimeUnit.SECONDS))
             assertFalse(settings.enabled)
         }
     }

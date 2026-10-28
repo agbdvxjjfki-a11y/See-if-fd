@@ -4,6 +4,12 @@ pluginManagement {
         mavenCentral()
         gradlePluginPortal()
     }
+
+    plugins {
+        id("com.android.application") version "8.13.2"
+        id("org.jetbrains.kotlin.android") version "2.2.20"
+        id("org.jetbrains.kotlin.plugin.compose") version "2.2.20"
+    }
 }
 
 dependencyResolutionManagement {
@@ -15,4 +21,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "Shura"
-include(":core")
+include(":core", ":app")

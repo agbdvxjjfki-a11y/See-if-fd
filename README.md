@@ -1,30 +1,32 @@
-# See-if-fd
+# Shura
 
-## Current project scope
+Shura is an Android image reader and a Kotlin core library. The Android app is in `:app`; repository parsing and content policy live in `:core`.
 
-Shura currently contains a Kotlin/JVM core library (`:core`), not an Android application module. The core provides:
+## Android app
 
-- HTTPS repository URL validation, Mihon-style `index.min.json` parsing, and bounded index downloads.
-- Local repository URL persistence, catalog refresh/retry state, extension search, and catalog version comparisons.
-- Built-in metadata checks that block explicit-content indicators and positive repository NSFW classifications, while reporting weaker mature-content indicators as warnings.
-- Reader settings, a cancellable auto-flip controller, and a non-destructive translation-overlay data model.
+The Compose app includes:
 
-Repository fetching and file persistence are synchronous core APIs. An eventual Android UI must call them off the main thread and persist files inside app-private storage.
+- Arabic-first navigation with Arabic/English resources, RTL layout, and a dark theme option.
+- A local title list saved in app preferences. These are user-entered titles, not fetched manga or chapter records.
+- Repository management backed by `RepositoryManager`, `RepositoryIndexClient`, and app-private `FileRepositoryConfigurationStore` storage. Network/index work runs off the UI thread.
+- Extension catalog browsing with the core content policy applied when rendering each catalog entry. It does not expose an install or run action.
+- A reader for multiple image documents selected by the user, with paging, pinch zoom, retry for unreadable images, and auto-flip connected to the core `AutoFlipController`. The original files are not changed; decoding is downsampled transiently for display.
+- Persisted reader settings and language/theme preferences.
+
+The app currently understands the Mihon-style `index.min.json` array parsed by `:core`. Other index formats have not been verified. Reading a catalog does not mean that APK installation or Mihon source execution is supported.
+
+## Content and translation limits
+
+Metadata checks block explicit indicators and positive repository NSFW flags, while weaker/missing metadata is surfaced as a warning. The policy does not inspect page images and cannot guarantee detection of all inappropriate content. No ordinary UI setting disables the block policy.
+
+The reader can display the user's local images. OCR and a translation provider are not implemented; the app does not show a fake translation action.
 
 ## Build and tests
 
-The project targets Java 17 and uses Kotlin 2.2.20. With a Java 17 JDK installed, run:
+The project targets Java 17 and uses Gradle 8.13, Android Gradle Plugin 8.13.2, and Kotlin 2.2.20. Install Android SDK Platform 36 and Build Tools 36.0.0, then run:
 
 ```shell
-./gradlew :core:test --no-daemon
+./gradlew clean :core:test :app:testDebugUnitTest :app:assembleDebug --no-daemon
 ```
 
-GitHub Actions runs the core tests on pushes and pull requests.
-
-## Compatibility and safety limits
-
-Only the Mihon-style JSON array format represented by the checked-in parser is currently supported. The code can read catalog metadata but does not download or install APKs, run extension code, or implement the Mihon source runtime. No Android app module, Android SDK integration, or user interface exists yet.
-
-The content policy evaluates supplied metadata and repository classifications. It does not analyze page images and cannot guarantee detection of all inappropriate content. Mature-content keywords produce warnings rather than automatic blocks unless an explicit indicator or positive repository NSFW flag is present.
-
-The translation types preserve original text/image data, but OCR and translation-provider integrations are not implemented. The auto-flip controller is a core component and is not yet connected to an Android reader screen.
+GitHub Actions installs the Android SDK packages, runs core and app unit tests, and builds the debug APK on pushes and pull requests.
