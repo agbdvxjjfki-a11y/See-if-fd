@@ -33,6 +33,7 @@
     <string name="repository_unknown_name">مستودع الإضافات</string>
     <string name="repository_final_url">رابط الفهرس النهائي: %1$s</string>
     <string name="repository_http_status">حالة HTTP: %1$d</string>
+    <string name="repository_content_type">نوع المحتوى: %1$s</string>
     <string name="repository_refresh">تحديث</string>
     <string name="repository_retry">إعادة المحاولة</string>
     <string name="repository_remove">حذف</string>

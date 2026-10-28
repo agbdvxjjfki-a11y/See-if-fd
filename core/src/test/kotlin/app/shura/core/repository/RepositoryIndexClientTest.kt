@@ -38,7 +38,7 @@ class RepositoryIndexClientTest {
 
     @Test
     fun followsRedirectsAndRecordsFinalUrlAndRedirectChain() = withHttpsServer { server ->
-        server.enqueue(MockResponse().setResponseCode(302).addHeader("Location", "/storage/index.pb"))
+        server.enqueue(MockResponse().setResponseCode(302).addHeader("Location", "../storage/index.pb"))
         server.enqueue(
             MockResponse()
                 .setResponseCode(200)
@@ -61,7 +61,12 @@ class RepositoryIndexClientTest {
 
     @Test
     fun retriesDirectoryCandidatesAfter404AndUsesTheFirstValidIndex() = withHttpsServer { server ->
-        server.enqueue(MockResponse().setResponseCode(404))
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(404)
+                .addHeader("Content-Type", "text/plain")
+                .setBody("index not found"),
+        )
         server.enqueue(
             MockResponse()
                 .setResponseCode(200)
@@ -81,7 +86,12 @@ class RepositoryIndexClientTest {
 
     @Test
     fun reportsReal404AndDoesNotHideTheFailedUrl() = withHttpsServer { server ->
-        server.enqueue(MockResponse().setResponseCode(404))
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(404)
+                .addHeader("Content-Type", "text/plain")
+                .setBody("index not found"),
+        )
         val repository = RepositoryAddress.parse(serverUrl(server, "/repo/index.json"))
         val error = assertFailsWith<RepositoryIndexFetchException> {
             RepositoryIndexClient().fetch(repository)
@@ -89,8 +99,10 @@ class RepositoryIndexClientTest {
 
         assertEquals(RepositoryFetchFailure.NOT_FOUND, error.failure)
         assertEquals(404, error.diagnostics.single().statusCode)
+        assertEquals("text/plain", error.diagnostics.single().contentType)
         assertEquals(serverUrl(server, "/repo/index.json"), error.diagnostics.single().finalUrl)
         assertFalse(error.diagnostics.single().bodyDownloaded)
+        assertTrue(error.message.orEmpty().contains("Content-Type: text/plain"))
     }
 
     @Test
@@ -188,32 +200,36 @@ class RepositoryIndexClientTest {
     fun keiyoushiPublicIndexCanBeCheckedOnDemand() {
         assumeTrue(System.getenv("SHURA_RUN_INTEGRATION_TESTS") == "true")
         val url = "https://github.com/keiyoushi/extensions/raw/repo/index.pb"
-        val repository = RepositoryAddress.parse(url)
-        val fetched = RepositoryIndexClient().fetch(repository)
-        val parsed = RepositoryCatalogParser().parse(fetched, repository)
+        val manager = RepositoryManager(InMemoryRepositoryStore(), RepositoryIndexClient())
+        val snapshot = manager.addRepository(url)
 
         println(
-            "Keiyoushi index: input=$url, final=${fetched.diagnostic.finalUrl}, " +
-                "status=${fetched.diagnostic.statusCode}, contentType=${fetched.contentType}, " +
-                "redirects=${fetched.diagnostic.redirects.size}, extensions=${parsed.extensions.size}",
+            "Keiyoushi index: input=$url, final=${snapshot.indexUrl}, " +
+                "status=${snapshot.httpStatus}, contentType=${snapshot.contentType}, " +
+                "redirects=${snapshot.redirectStatuses.size}, extensions=${snapshot.extensions.size}, " +
+                "entries=${snapshot.extensions.take(10).joinToString { "${it.name} [${it.packageName}] ${it.version}" }}",
         )
-        assertTrue(parsed.extensions.isNotEmpty())
+        assertEquals(200, snapshot.httpStatus)
+        assertTrue(snapshot.bodyDownloaded)
+        assertTrue(manager.repositories().single().extensions.isNotEmpty())
     }
 
     @Test
     fun keiyoushiPublicJsonIndexCanBeCheckedOnDemand() {
         assumeTrue(System.getenv("SHURA_RUN_INTEGRATION_TESTS") == "true")
         val url = "https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.min.json"
-        val repository = RepositoryAddress.parse(url)
-        val fetched = RepositoryIndexClient().fetch(repository)
-        val parsed = RepositoryCatalogParser().parse(fetched, repository)
+        val manager = RepositoryManager(InMemoryRepositoryStore(), RepositoryIndexClient())
+        val snapshot = manager.addRepository(url)
 
         println(
-            "Keiyoushi JSON index: input=$url, final=${fetched.diagnostic.finalUrl}, " +
-                "status=${fetched.diagnostic.statusCode}, contentType=${fetched.contentType}, " +
-                "extensions=${parsed.extensions.size}",
+            "Keiyoushi JSON index: input=$url, final=${snapshot.indexUrl}, " +
+                "status=${snapshot.httpStatus}, contentType=${snapshot.contentType}, " +
+                "extensions=${snapshot.extensions.size}, " +
+                "entries=${snapshot.extensions.joinToString { "${it.name} [${it.packageName}] ${it.version}" }}",
         )
-        assertTrue(parsed.extensions.isNotEmpty())
+        assertEquals(200, snapshot.httpStatus)
+        assertTrue(snapshot.bodyDownloaded)
+        assertTrue(manager.repositories().single().extensions.isNotEmpty())
     }
 
     private fun indexProto(): Index =
@@ -266,6 +282,16 @@ class RepositoryIndexClientTest {
         } finally {
             server.shutdown()
             HttpsURLConnection.setDefaultSSLSocketFactory(originalSocketFactory)
+        }
+    }
+
+    private class InMemoryRepositoryStore : RepositoryConfigurationStore {
+        private var urls: List<String> = emptyList()
+
+        override fun load(): List<String> = urls.toList()
+
+        override fun save(repositoryUrls: List<String>) {
+            urls = repositoryUrls.toList()
         }
     }
 }

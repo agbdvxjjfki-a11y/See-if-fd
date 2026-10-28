@@ -156,7 +156,8 @@ class RepositoryIndexClient(
                     throw RepositoryIndexFetchException(
                         RepositoryFetchFailure.NOT_FOUND,
                         listOf(diagnostic),
-                        "الفهرس غير موجود: HTTP 404 عند ${safeUrl(current)}",
+                        "الفهرس غير موجود: HTTP 404 عند ${safeUrl(current)} " +
+                            "(Content-Type: ${contentType ?: "غير معروف"})",
                     )
                 }
                 if (status != HttpURLConnection.HTTP_OK) {

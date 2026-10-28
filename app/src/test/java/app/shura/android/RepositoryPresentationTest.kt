@@ -1,8 +1,13 @@
 package app.shura.android
 
 import app.shura.core.repository.ExtensionDescriptor
+import app.shura.core.repository.FetchedRepositoryIndex
+import app.shura.core.repository.IndexRequestDiagnostic
 import app.shura.core.repository.RepositoryAddress
 import app.shura.core.repository.RepositoryCatalogSnapshot
+import app.shura.core.repository.RepositoryConfigurationStore
+import app.shura.core.repository.RepositoryIndexSource
+import app.shura.core.repository.RepositoryManager
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -23,6 +28,42 @@ class RepositoryPresentationTest {
         )
 
         assertEquals(listOf(first, second), state.extensionCatalog())
+    }
+
+    @Test
+    fun mihonIndexFlowsThroughParserRepositoryManagerAndUiState() {
+        val indexJson =
+            """[{"name":"Fixture Reader","pkg":"org.example.fixture.en","apk":"apk/fixture.apk","lang":"en","version":"1.2.3","code":123,"nsfw":0,"sources":[{"name":"Fixture Source","lang":"en","id":"321","baseUrl":"https://source.example"}]}]"""
+        val manager = RepositoryManager(
+            store = InMemoryRepositoryStore(),
+            indexSource = RepositoryIndexSource { repository ->
+                val finalUrl = repository.indexCandidates().first().toString()
+                FetchedRepositoryIndex(
+                    body = indexJson.toByteArray(),
+                    contentType = "application/json",
+                    diagnostic = IndexRequestDiagnostic(
+                        inputUrl = repository.inputUrl,
+                        requestedUrl = finalUrl,
+                        finalUrl = finalUrl,
+                        statusCode = 200,
+                        contentType = "application/json",
+                        redirects = emptyList(),
+                        redirectStatuses = emptyList(),
+                        bodyDownloaded = true,
+                    ),
+                    attempts = emptyList(),
+                )
+            },
+        )
+
+        val added = manager.addRepository("https://example.org/repository/index.min.json")
+        val state = ShuraUiState(repositories = manager.repositories())
+
+        assertEquals(1, added.extensions.size)
+        assertEquals("Fixture Reader", state.extensionCatalog().single().name)
+        assertEquals("org.example.fixture.en", state.extensionCatalog().single().packageName)
+        assertEquals(123L, state.extensionCatalog().single().versionCode)
+        assertEquals("Fixture Source", state.extensionCatalog().single().sources.single().name)
     }
 
     @Test
@@ -50,4 +91,10 @@ class RepositoryPresentationTest {
             adultFlag = 0,
             apkUrl = "https://example.org/repo/$packageName.apk",
         )
+
+    private class InMemoryRepositoryStore : RepositoryConfigurationStore {
+        override fun load(): List<String> = emptyList()
+
+        override fun save(repositoryUrls: List<String>) = Unit
+    }
 }

@@ -33,6 +33,7 @@
     <string name="repository_unknown_name">Extension repository</string>
     <string name="repository_final_url">Final index URL: %1$s</string>
     <string name="repository_http_status">HTTP status: %1$d</string>
+    <string name="repository_content_type">Content type: %1$s</string>
     <string name="repository_refresh">Refresh</string>
     <string name="repository_retry">Retry</string>
     <string name="repository_remove">Remove</string>

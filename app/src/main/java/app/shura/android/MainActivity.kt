@@ -475,6 +475,9 @@ private fun RepositoriesScreen(viewModel: ShuraViewModel, state: ShuraUiState, p
                     snapshot.httpStatus?.let {
                         Text(stringResource(R.string.repository_http_status, it), style = MaterialTheme.typography.bodySmall)
                     }
+                    snapshot.contentType?.let {
+                        Text(stringResource(R.string.repository_content_type, it), style = MaterialTheme.typography.bodySmall)
+                    }
                 }
             }
         }
@@ -560,6 +563,9 @@ private fun RepositoryCard(
             }
             snapshot.httpStatus?.let {
                 Text(stringResource(R.string.repository_http_status, it), style = MaterialTheme.typography.bodySmall)
+            }
+            snapshot.contentType?.let {
+                Text(stringResource(R.string.repository_content_type, it), style = MaterialTheme.typography.bodySmall)
             }
             Text(
                 if (snapshot.extensions.isEmpty() && snapshot.lastUpdated != null && snapshot.error == null) {
